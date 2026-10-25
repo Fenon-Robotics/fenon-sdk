@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fenon"
+version = "0.0.1"
+description = "Fenon Python SDK"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{name = "Fenon Robotics"}]
+classifiers = ["Development Status :: 1 - Planning", "Programming Language :: Python :: 3"]
+
+[project.urls]
+Repository = "https://github.com/Fenon-Robotics/fenon-sdk"
+
+[tool.setuptools.packages.find]
+where = ["src"]
