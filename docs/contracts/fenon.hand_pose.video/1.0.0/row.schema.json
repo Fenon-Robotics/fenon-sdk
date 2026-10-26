@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://api.fenon.ai/contracts/fenon.hand_pose.video/1.0.0/row.schema.json",
+  "title": "HandPoseFrame",
+  "description": "One line of the annotations output: one processed frame, for contract fenon.hand_pose.video 1.0.0.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["frame_index", "timestamp_sec", "image_size", "joint_order", "raw_hand_count", "suppressed_duplicate_count", "hands"],
+  "properties": {
+    "frame_index": { "type": "integer", "minimum": 0 },
+    "timestamp_sec": { "type": "number", "minimum": 0, "description": "frame_index / fps." },
+    "image_size": {
+      "title": "ImageSize",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height"],
+      "properties": {
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "joint_order": {
+      "const": "wrist,thumb_cmc,thumb_mcp,thumb_ip,thumb_tip,index_mcp,index_pip,index_dip,index_tip,middle_mcp,middle_pip,middle_dip,middle_tip,ring_mcp,ring_pip,ring_dip,ring_tip,pinky_mcp,pinky_pip,pinky_dip,pinky_tip"
+    },
+    "raw_hand_count": { "type": "integer", "minimum": 0 },
+    "suppressed_duplicate_count": { "type": "integer", "minimum": 0 },
+    "hands": { "type": "array", "items": { "$ref": "#/$defs/hand" }, "description": "Hands kept after duplicate removal. Order is not significant." }
+  },
+  "$defs": {
+    "point2": {
+      "title": "Point2",
+      "description": "[x, y], or [null, null] when the joint can't be projected (z <= 1e-6).",
+      "oneOf": [
+        { "title": "ProjectedPoint2", "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+        { "title": "MissingPoint2", "type": "array", "items": { "type": "null" }, "minItems": 2, "maxItems": 2 }
+      ]
+    },
+    "point3": { "title": "Point3", "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+    "hand": {
+      "title": "Hand",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["handedness", "pixel_landmarks", "normalized_landmarks", "landmarks_3d_camera", "bbox_xyxy", "joint_state", "joint_confidence", "hand_score"],
+      "properties": {
+        "handedness": { "enum": ["left", "right"] },
+        "pixel_landmarks": { "type": "array", "items": { "$ref": "#/$defs/point2" }, "minItems": 21, "maxItems": 21, "description": "Pixels, origin top-left, x right, y down." },
+        "normalized_landmarks": { "type": "array", "items": { "$ref": "#/$defs/point2" }, "minItems": 21, "maxItems": 21, "description": "pixel_landmarks divided by image width and height." },
+        "landmarks_3d_camera": { "type": "array", "items": { "$ref": "#/$defs/point3" }, "minItems": 21, "maxItems": 21, "description": "Metres, camera frame: origin at the optical centre, x right, y down, z forward. Depth is scale-consistent, not metric." },
+        "bbox_xyxy": {
+          "description": "Box around the projectable joints in pixels, or four nulls when none are projectable.",
+          "oneOf": [
+            { "title": "Box", "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4 },
+            { "title": "MissingBox", "type": "array", "items": { "type": "null" }, "minItems": 4, "maxItems": 4 }
+          ]
+        },
+        "joint_state": { "type": "array", "items": { "enum": ["in_frame_predicted", "outside_frame_predicted"] }, "minItems": 21, "maxItems": 21 },
+        "joint_confidence": { "type": "array", "items": { "type": ["number", "null"], "minimum": 0, "maximum": 1 }, "minItems": 21, "maxItems": 21, "description": "Always null for fenon/hand-pose-hm." },
+        "hand_score": { "type": ["number", "null"], "minimum": 0, "maximum": 1, "description": "Always null for fenon/hand-pose-hm." }
+      }
+    }
+  }
+}

@@ -1,0 +1,557 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fenon API Contract</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Funnel+Display:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --orange: #FF5402;
+  --orange-deep: #D14300;
+  --ink: #090A09;
+  --paper: #FFFFFF;
+  --stone-50: #F5F5F1;
+  --stone-100: #EDEDE7;
+  --stone-200: #D9D9D0;
+  --stone-600: #5E605A;
+  --graphite-900: #101110;
+  --amber-50: #FFF5D9;
+  --amber-800: #774A01;
+  --font-heading: "Funnel Display", Inter, "Helvetica Neue", Arial, sans-serif;
+  --font-sans: Inter, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "Fira Code", ui-monospace, Menlo, monospace;
+}
+* { box-sizing: border-box; border-radius: 0; }
+html { scroll-behavior: smooth; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.6 var(--font-sans); -webkit-font-smoothing: antialiased; }
+a { color: var(--orange-deep); text-underline-offset: 3px; }
+a:hover { text-decoration-thickness: 2px; }
+.top { position: sticky; top: 0; z-index: 10; background: var(--ink); color: var(--paper); border-bottom: 1px solid var(--graphite-900); }
+.top-inner { max-width: 1180px; margin: 0 auto; padding: 14px 24px; display: flex; align-items: center; gap: 16px; }
+.mark { display: flex; align-items: center; gap: 10px; font: 600 18px var(--font-heading); letter-spacing: -0.01em; }
+.mark i { width: 14px; height: 14px; background: var(--orange); display: inline-block; }
+.top .meta { margin-left: auto; font: 12px var(--font-mono); color: #A4A19C; }
+.layout { max-width: 1180px; margin: 0 auto; padding: 0 24px; display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 48px; }
+nav.toc { position: sticky; top: 64px; align-self: start; padding: 40px 0; max-height: calc(100vh - 64px); overflow-y: auto; }
+nav.toc p { font: 500 11px var(--font-mono); text-transform: uppercase; letter-spacing: 0.08em; color: var(--stone-600); margin: 20px 0 10px; }
+nav.toc p:first-child { margin-top: 0; }
+nav.toc a { display: block; padding: 5px 0 5px 12px; color: var(--stone-600); text-decoration: none; border-left: 2px solid var(--stone-200); font-size: 14px; }
+nav.toc a:hover { color: var(--ink); border-left-color: var(--orange); }
+main { padding: 40px 0 96px; min-width: 0; }
+.hero { padding-bottom: 32px; border-bottom: 1px solid var(--stone-200); margin-bottom: 8px; }
+.eyebrow { font: 500 12px var(--font-mono); text-transform: uppercase; letter-spacing: 0.08em; color: var(--orange-deep); margin: 0 0 12px; }
+.part { font: 500 12px var(--font-mono); text-transform: uppercase; letter-spacing: 0.08em; color: var(--orange-deep); margin: 72px 0 0; padding-top: 24px; border-top: 1px solid var(--ink); }
+h1 { font: 600 44px/1.05 var(--font-heading); letter-spacing: -0.025em; margin: 0 0 16px; }
+h2 { font: 600 28px/1.15 var(--font-heading); letter-spacing: -0.02em; margin: 56px 0 8px; scroll-margin-top: 80px; }
+.part + h2 { margin-top: 8px; }
+h3 { font: 600 18px/1.3 var(--font-heading); margin: 32px 0 8px; scroll-margin-top: 80px; }
+.lede { font-size: 17px; color: var(--stone-600); max-width: 720px; margin: 0; }
+p { max-width: 760px; }
+main ul, main ol { max-width: 760px; padding-left: 20px; }
+main li { margin: 8px 0; }
+.badges { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+.badge { font: 500 12px var(--font-mono); padding: 4px 10px; border: 1px solid var(--stone-200); background: var(--stone-50); }
+.badge.draft { border-color: var(--amber-800); background: var(--amber-50); color: var(--amber-800); }
+code { font: 13px var(--font-mono); background: var(--stone-50); border: 1px solid var(--stone-100); padding: 1px 5px; }
+pre { font: 13px/1.6 var(--font-mono); background: var(--stone-50); border: 1px solid var(--stone-200); padding: 16px 18px; overflow-x: auto; margin: 12px 0 20px; }
+pre code { background: none; border: 0; padding: 0; }
+.k { color: var(--orange-deep); }
+.c { color: var(--stone-600); }
+table { width: 100%; border-collapse: collapse; margin: 12px 0 24px; font-size: 14px; }
+th { text-align: left; font: 500 11px var(--font-mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--stone-600); border-bottom: 1px solid var(--ink); padding: 8px 12px 8px 0; }
+td { border-bottom: 1px solid var(--stone-200); padding: 10px 12px 10px 0; vertical-align: top; }
+td code { white-space: nowrap; }
+.wrap { overflow-x: auto; }
+.endpoint { border: 1px solid var(--stone-200); margin: 24px 0; scroll-margin-top: 80px; }
+.endpoint-head { display: flex; align-items: center; gap: 12px; padding: 12px 16px; background: var(--stone-50); border-bottom: 1px solid var(--stone-200); flex-wrap: wrap; }
+.method { font: 600 12px var(--font-mono); padding: 3px 8px; color: var(--paper); background: var(--ink); }
+.method.post { background: var(--orange-deep); }
+.method.put { background: var(--stone-600); }
+.path { font: 500 15px var(--font-mono); }
+.endpoint-head .note { margin-left: auto; font-size: 13px; color: var(--stone-600); }
+.endpoint-body { padding: 4px 16px 8px; }
+.callout { border: 1px solid var(--stone-200); background: var(--stone-50); padding: 12px 16px; margin: 16px 0; max-width: 760px; }
+.callout.warn { border-color: var(--amber-800); background: var(--amber-50); }
+.callout strong { font-weight: 600; }
+.layers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--stone-200); margin: 16px 0; }
+.layers div { padding: 16px; font-size: 14px; }
+.layers div + div { border-left: 1px solid var(--stone-200); }
+.layers b { display: block; font: 500 11px var(--font-mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--orange-deep); margin-bottom: 6px; }
+footer { border-top: 1px solid var(--stone-200); margin-top: 64px; padding-top: 16px; font: 12px var(--font-mono); color: var(--stone-600); }
+@media (max-width: 860px) {
+  .layout { grid-template-columns: 1fr; gap: 0; padding: 0 16px; }
+  nav.toc { display: none; }
+  h1 { font-size: 34px; }
+  .layers { grid-template-columns: 1fr; }
+  .layers div + div { border-left: 0; border-top: 1px solid var(--stone-200); }
+  .top-inner { padding: 12px 16px; }
+}
+</style>
+</head>
+<body>
+<header class="top"><div class="top-inner"><span class="mark"><i></i>fenon</span><span class="meta">API contract · v1 draft</span></div></header>
+<div class="layout">
+<nav class="toc" aria-label="Contents">
+  <p>Part 1 · SDK</p>
+  <a href="#sdk">What users write</a>
+  <a href="#sdk-surface">Public surface</a>
+  <a href="#sdk-errors">Errors</a>
+  <a href="#sdk-behaviour">Behaviour</a>
+  <a href="#sdk-structure">How it's built</a>
+  <p>Part 2 · Shared API</p>
+  <a href="#conventions">Conventions</a>
+  <a href="#idempotency">Idempotency</a>
+  <a href="#models">Models</a>
+  <a href="#uploads">Uploads</a>
+  <a href="#runs">Runs</a>
+  <a href="#run-object">The run object</a>
+  <a href="#usage">Usage</a>
+  <a href="#errors">Errors</a>
+  <a href="#retries">Retries and timeouts</a>
+  <a href="#modes">Modes</a>
+  <a href="#storage">Data the service keeps</a>
+  <p>Part 3 · Model contracts</p>
+  <a href="#hand-pose">fenon.hand_pose.video</a>
+  <a href="#hp-rows">Output rows</a>
+  <a href="#frames">Coordinate frames</a>
+  <a href="#runner">Runner requirements</a>
+  <p>Other</p>
+  <a href="#sync">Schemas and versioning</a>
+  <a href="#open">Open items</a>
+</nav>
+<main>
+
+<section class="hero">
+  <p class="eyebrow">Fenon API · v1</p>
+  <h1>API contract</h1>
+  <p class="lede">What developers write with the Fenon SDK, the API it talks to, and what each model takes and returns. How models are executed is handled separately; Part 3 lists what the runner must produce.</p>
+  <div class="badges">
+    <span class="badge draft">Draft for sign-off</span>
+    <span class="badge">26 Oct 2026</span>
+    <span class="badge">First model: fenon/hand-pose-hm</span>
+  </div>
+</section>
+
+<div class="layers">
+  <div><b>Part 1 · SDK</b>One call per task, for example <code>client.pose.hand(model, input, mode)</code>. Everything else happens inside it.</div>
+  <div><b>Part 2 · Shared API</b>Auth, models, uploads, runs, usage, errors, retries. The same for every model. Normative file: <code>openapi.yaml</code>.</div>
+  <div><b>Part 3 · Model contracts</b>Versioned input, result and output schemas per contract. Normative files: <code>contracts/&lt;id&gt;/&lt;version&gt;/*.schema.json</code>.</div>
+</div>
+
+<div class="callout warn"><strong>Implementation status.</strong> <code>fenon-api</code> is a skeleton: the database, key checking, R2 storage, the queue and GPU workers are interfaces with no implementation. Endpoints that need one answer <code>501 not_implemented</code>, so no run completes end to end yet.</div>
+
+<p class="part">Part 1 · SDK</p>
+<h2 id="sdk">What users write</h2>
+<pre><code>from fenon import Fenon
+
+client = Fenon()                                    <span class="c"># reads FENON_API_KEY</span>
+
+result = client.pose.hand(model="fenon/hand-pose-hm", input="clip.mp4", mode="recorded")
+
+for frame in result.frames:                         <span class="c"># typed, parsed from the fetched output</span>
+    for hand in frame.hands:
+        hand.handedness, hand.pixel_landmarks
+result.usage                                        <span class="c"># Usage(unit="frame", quantity=300)</span>
+result.save("clip.jsonl")</code></pre>
+<p>The SDK always processes the whole video. It never sends <code>input.range</code> and has no preview or confidence option; those are Playground features of the API.</p>
+
+<h3>Without blocking</h3>
+<pre><code>job = client.pose.hand(model="fenon/hand-pose-hm", input="clip.mp4", mode="recorded", wait=False)
+job.status        <span class="c"># "preparing_input" → "queued" → "processing_frames" → "writing_results" → "succeeded"</span>
+result = job.result()
+job.cancel()</code></pre>
+
+<h3>Live models (later)</h3>
+<pre><code>with client.&lt;capability&gt;.connect(model="nvidia/groot-n1.7") as session:
+    step = session.step(observation)
+    step.action</code></pre>
+<p>Live work uses an explicit session (as OpenAI, Dreamscale and Dream Labs do). Names are set when the first live model is added.</p>
+
+<h2 id="sdk-surface">Public surface</h2>
+<div class="wrap"><table>
+<thead><tr><th>Item</th><th>Definition</th></tr></thead>
+<tbody>
+<tr><td><code>Fenon(api_key=None, base_url=None, timeout=60.0, max_retries=2)</code></td><td><code>api_key</code> falls back to <code>FENON_API_KEY</code> and <code>base_url</code> to <code>FENON_BASE_URL</code>; a missing key raises <code>AuthError</code> on the first call. <code>timeout</code> is the read timeout in seconds for each API call. Context manager; <code>close()</code> releases connections.</td></tr>
+<tr><td><code>client.pose.hand(*, model, input, mode="recorded", wait=True)</code></td><td><code>model</code> (required) a model ID. <code>input</code> the path to a local video file (<code>str</code> or <code>os.PathLike</code>). <code>mode</code> is <code>"recorded"</code>, the only mode in v1. The whole video is processed. Returns <code>HandPoseResult</code>, or <code>HandPoseJob</code> when <code>wait=False</code>.</td></tr>
+<tr><td><code>HandPoseResult</code></td><td><code>id</code>, <code>model</code>, <code>model_version</code>, <code>video</code>, <code>joint_order</code>, <code>camera</code>, <code>usage</code>, <code>frames</code>, <code>save(path)</code></td></tr>
+<tr><td><code>HandPoseJob</code></td><td><code>id</code>; <code>status</code> (fetched from the API while the run isn't final, cached once it is); <code>result()</code> waits and returns <code>HandPoseResult</code>; <code>cancel()</code> returns <code>None</code></td></tr>
+</tbody></table></div>
+<p>Uploads, run creation, polling, idempotency, retries, fetching the output and contract checks are internal.</p>
+
+<h2 id="sdk-errors">Errors</h2>
+<div class="wrap"><table>
+<thead><tr><th>Exception</th><th>Raised for</th></tr></thead>
+<tbody>
+<tr><td><code>AuthError</code></td><td>Missing key; 401, 403</td></tr>
+<tr><td><code>CreditsError</code></td><td>402</td></tr>
+<tr><td><code>InvalidInputError</code> (also <code>ValueError</code>)</td><td>Local checks (file missing or unreadable, unsupported extension, unsupported <code>mode</code>, file changed during upload); 400, 413, 415, 422</td></tr>
+<tr><td><code>NotFoundError</code></td><td>404</td></tr>
+<tr><td><code>RateLimitError</code></td><td>429 after retries</td></tr>
+<tr><td><code>ServerError</code></td><td><code>501 not_implemented</code> (never retried); other 5xx after retries; storage failures; an unknown run status; a contract mismatch; a response or output the SDK can't parse</td></tr>
+<tr><td><code>NetworkError</code> (also <code>ConnectionError</code>)</td><td>Connection failures and timeouts after retries; 408 after retries</td></tr>
+<tr><td><code>RunFailedError</code></td><td>The run ended <code>failed</code> or <code>canceled</code>. Carries <code>run_id</code> and the run's <code>error</code> fields: <code>code</code>, <code>stage</code>, <code>frame</code>, <code>timestamp_s</code></td></tr>
+<tr><td><code>UnsupportedModelError</code></td><td>The run's contract ID or major version isn't supported by this SDK version</td></tr>
+</tbody></table></div>
+<p>All subclass <code>FenonError</code>: <code>message</code>, <code>code</code>, <code>fix</code>, <code>details</code>, <code>request_id</code>, <code>status_code</code>, <code>retryable</code>, <code>retry_after_s</code>. Any other 4xx raises <code>FenonError</code> itself. An error raised while waiting on a run also carries <code>.job</code>; the run keeps going and <code>e.job.result()</code> resumes waiting.</p>
+<h3>Errors the SDK raises itself</h3>
+<div class="wrap"><table>
+<thead><tr><th>Situation</th><th>Exception</th><th><code>code</code></th></tr></thead>
+<tbody>
+<tr><td>No API key</td><td><code>AuthError</code></td><td><code>missing_api_key</code></td></tr>
+<tr><td>An invalid <code>Fenon(...)</code> argument (for example <code>timeout ≤ 0</code>, an empty <code>base_url</code>, or an API key with spaces, line breaks or non-ASCII characters)</td><td><code>InvalidInputError</code></td><td><code>invalid_argument</code></td></tr>
+<tr><td>Connection failed or timed out after retries</td><td><code>NetworkError</code></td><td><code>network_error</code></td></tr>
+<tr><td>File missing or not a regular file (checked before any request)</td><td><code>InvalidInputError</code></td><td><code>file_not_found</code></td></tr>
+<tr><td>File unreadable</td><td><code>InvalidInputError</code></td><td><code>file_unreadable</code></td></tr>
+<tr><td>Extension not <code>.mp4</code>, <code>.mov</code> or <code>.webm</code></td><td><code>InvalidInputError</code></td><td><code>unsupported_media_type</code></td></tr>
+<tr><td><code>mode</code> other than <code>"recorded"</code></td><td><code>InvalidInputError</code></td><td><code>mode_not_supported</code></td></tr>
+<tr><td>File size changed after the upload was reserved</td><td><code>InvalidInputError</code></td><td><code>file_changed</code></td></tr>
+<tr><td>Upload refused again after one renewal</td><td><code>ServerError</code></td><td><code>upload_rejected</code></td></tr>
+<tr><td>Storage answered with an unexpected status, or the transfer couldn't complete (for example an undecodable body)</td><td><code>ServerError</code></td><td><code>storage_error</code></td></tr>
+<tr><td>The run's contract ID or major isn't supported (run cancelled first)</td><td><code>UnsupportedModelError</code></td><td><code>unsupported_contract</code></td></tr>
+<tr><td>A shipped contract version with a different <code>schema_sha256</code> (run cancelled first)</td><td><code>ServerError</code></td><td><code>contract_mismatch</code></td></tr>
+<tr><td>A run status outside the fixed set</td><td><code>ServerError</code></td><td><code>unknown_status</code></td></tr>
+<tr><td>Output URL refused again after one refresh</td><td><code>ServerError</code></td><td><code>output_rejected</code></td></tr>
+<tr><td>Output shorter or longer than its <code>size_bytes</code></td><td><code>ServerError</code></td><td><code>output_truncated</code></td></tr>
+<tr><td>An output line that fails the row schema (names the line)</td><td><code>ServerError</code></td><td><code>output_invalid</code></td></tr>
+<tr><td>A response the SDK can't read or parse, or a storage URL or headers it can't use</td><td><code>ServerError</code></td><td><code>invalid_response</code></td></tr>
+</tbody></table></div>
+<p>For these, by default <code>request_id</code>, <code>status_code</code> and <code>retry_after_s</code> are <code>None</code>, <code>retryable</code> is <code>False</code>, <code>details</code> is <code>{}</code>, and <code>fix</code> is a one-line next step where one helps. Errors raised while reading an API response (<code>invalid_response</code>, <code>unknown_status</code>, <code>unsupported_contract</code>, <code>contract_mismatch</code>) carry that response's <code>request_id</code>, and its <code>status_code</code> when the status was read; <code>unknown_status</code> (<code>status</code>), the contract refusals (<code>run_id</code>, <code>contract_id</code>, <code>contract_version</code>) and <code>output_truncated</code> (<code>expected_bytes</code>, <code>received_bytes</code>) fill <code>details</code>.</p>
+
+<h2 id="sdk-behaviour">Behaviour</h2>
+<ol>
+  <li><strong>Local checks</strong>, before any request: the file exists and is readable; its extension is <code>.mp4</code>, <code>.mov</code> or <code>.webm</code> (case-insensitive), which gives the content type; <code>mode</code> is <code>"recorded"</code>. Size and type limits are enforced by the API when the upload is reserved (<code>413</code>, <code>415</code> → <code>InvalidInputError</code>).</li>
+  <li><strong>Upload.</strong> <code>POST /v1/uploads</code>, then the file is streamed to <code>upload_url</code>, reopened and its size re-checked for each attempt. A <code>403</code> from storage (an expired or refused URL) gets one new reservation (new <code>Idempotency-Key</code>); a second refusal raises <code>upload_rejected</code>.</li>
+  <li><strong>Run.</strong> <code>POST /v1/runs</code> with <code>{"model": model, "input": {"video": upload_id}}</code>. There is no up-front model lookup: the run's <code>202</code> response names its <code>contract</code>. If the SDK doesn't support that contract ID or major version, it cancels the run (zero usage) and raises <code>UnsupportedModelError</code>. A shipped contract version whose <code>schema_sha256</code> differs also cancels the run, then raises <code>contract_mismatch</code>; a newer minor version of a supported major is accepted with unknown fields ignored. An unknown model is the API's <code>404 model_not_found</code>.</li>
+  <li><strong>Waiting.</strong> The SDK polls <code>GET /v1/runs/{id}</code>, waiting <code>Fenon-Poll-After-Ms</code> clamped to 250 ms – 60 s, or without it 2 s growing ×1.5 per poll up to 10 s, until a final status. <code>failed</code> and <code>canceled</code> raise <code>RunFailedError</code>.</li>
+  <li><strong>Ctrl-C.</strong> During a blocking call, once the run exists and isn't known to be final, the SDK sends one <code>POST /v1/runs/{id}/cancel</code> (one attempt, 5 s timeout) and then re-raises <code>KeyboardInterrupt</code>; a second Ctrl-C skips the cancel. A cancelled run has zero usage. A Ctrl-C before the run's <code>202</code> arrives can't cancel anything. With <code>wait=False</code> the SDK never cancels on its own.</li>
+  <li><strong>Output.</strong> The <code>annotations</code> output is fetched into memory the first time <code>frames</code> or <code>save()</code> is used (videos are capped at 60 s, so outputs are a few MB): 5 attempts as for uploads; a <code>403</code> from storage (an expired or refused URL) refetches the run once for a fresh URL, and a second refusal raises <code>output_rejected</code>; a size other than <code>size_bytes</code> raises <code>output_truncated</code>. <code>frames</code> parses it line by line, can be iterated repeatedly, and raises <code>output_invalid</code> naming the first line that fails the row schema. <code>save(path)</code> writes it to <code>path</code>, overwriting, and returns the <code>Path</code>.</li>
+</ol>
+
+<h2 id="sdk-structure">How it's built</h2>
+<p>Every model runs the same three steps, as in Hugging Face Transformers' pipelines (<code>preprocess → _forward → postprocess</code>). The template lives in the capability's <code>base.py</code>; the middle step is the core services:</p>
+<pre><code>client.pose.hand(model="fenon/hand-pose-hm", input="clip.mp4", mode="recorded")
+   │
+   ├─ 1. prepare   <span class="c">(models/pose/base.py)       local checks → upload → {"video": "upl_…"}</span>
+   ├─ 2. run       <span class="c">(_core/runs.py)             create run → contract check → poll → fetch output</span>
+   └─ 3. parse     <span class="c">(models/pose/hamer/client.py) result + output → HandPoseResult with typed frames</span></code></pre>
+<pre><code>src/fenon/
+  __init__.py  __main__.py  _version.py  py.typed
+  _client.py             <span class="c"># Fenon: configuration, logging, core services; attaches client.pose</span>
+  _core/                 <span class="c"># core services shared by every model</span>
+    http.py              <span class="c"># API client and storage client: auth, retries, hints, idempotency keys</span>
+    errors.py            <span class="c"># FenonError and subclasses, API error mapping</span>
+    logs.py              <span class="c"># FENON_LOG, redaction</span>
+    uploads.py           <span class="c"># upload service</span>
+    runs.py              <span class="c"># run service: create, contract check, poll, cancel, fetch output</span>
+    usage.py             <span class="c"># Usage</span>
+    _generated.py        <span class="c"># shared shapes generated from openapi.yaml</span>
+  models/
+    pose/
+      __init__.py        <span class="c"># Pose (client.pose): hand(); a run's contract → its implementation</span>
+      base.py            <span class="c"># base classes for any pose model: the template, video prepare, result and job bases</span>
+      hamer/
+        client.py        <span class="c"># HaMeR: contract, HandPoseResult, HandPoseJob, parsing</span>
+        _generated/      <span class="c"># types and contract constants generated from contracts/fenon.hand_pose.video/1.0.0</span></code></pre>
+<ul>
+  <li><strong>Dependencies point one way:</strong> <code>models</code> imports <code>_core</code>, never the reverse; <code>_client.py</code> imports both. A test enforces it.</li>
+  <li><strong>Adding a model</strong> with an existing contract needs no SDK change. A new contract adds a folder next to <code>hamer/</code>; a new capability adds <code>models/&lt;capability&gt;/</code> and one attribute on <code>Fenon</code>.</li>
+  <li><strong>Package:</strong> Python 3.11+ (tested on 3.11–3.14); dependencies <code>httpx2</code> and <code>pydantic</code> (v2); ships <code>py.typed</code>. Logger <code>fenon</code>, enabled with <code>FENON_LOG=info|debug</code>; it never logs keys, bodies, file paths or storage URLs.</li>
+</ul>
+
+<p class="part">Part 2 · Shared API</p>
+<h2 id="conventions">Conventions</h2>
+<div class="wrap"><table>
+<thead><tr><th>Item</th><th>Rule</th></tr></thead>
+<tbody>
+<tr><td>Normative file</td><td><code>openapi.yaml</code> defines every endpoint, field, type and nullability. This page explains it; the file wins on detail.</td></tr>
+<tr><td>Base URL</td><td><code>https://api.fenon.ai/v1</code> (proposed). The version is in the path.</td></tr>
+<tr><td>Authentication</td><td><code>Authorization: Bearer fenon_…</code> on every request. A key sees only its own project's uploads and runs; anything else is <code>404</code>.</td></tr>
+<tr><td>Bodies</td><td>JSON, UTF-8, <code>snake_case</code>. Clients ignore unknown fields.</td></tr>
+<tr><td>Enumerations</td><td>Run statuses and error <code>stage</code> values are fixed for all of <code>/v1</code>; a new value requires <code>/v2</code>. Error codes may grow; clients keep unknown codes as they are.</td></tr>
+<tr><td>Headers</td><td><code>User-Agent: fenon-python/&lt;version&gt;</code> from the SDK. <code>X-Request-Id: req_…</code> on every response.</td></tr>
+<tr><td>Storage URLs</td><td>Presigned upload and output URLs never receive <code>Authorization</code> or any Fenon header.</td></tr>
+<tr><td>IDs and times</td><td>Prefix + 12 characters from <code>0-9a-z</code> (<code>upl_</code>, <code>run_</code>, <code>req_</code>). Times are RFC 3339 UTC.</td></tr>
+<tr><td>Errors</td><td><code>400 invalid_request</code> for malformed JSON, wrong shared fields, a bad query parameter, or a missing or invalid <code>Idempotency-Key</code>. <code>404 not_found</code> for a path ID of the wrong form. <code>405 method_not_allowed</code>. <code>413 request_too_large</code> for a JSON body over 1 MiB. <code>415 unsupported_media_type</code> for a non-JSON body. <code>401</code> responses carry <code>WWW-Authenticate: Bearer</code>. <code>422</code> is only for contract input and upload state. <code>details.field</code> is a JSON Pointer (RFC 6901) into the request body. <code>retry_after_s</code> and <code>details</code> are always present (<code>null</code>, <code>{}</code>).</td></tr>
+<tr><td>Entitlement</td><td>In v1 every key can run every listed model; <code>403</code> is reserved.</td></tr>
+</tbody></table></div>
+
+<h2 id="idempotency">Idempotency</h2>
+<ul>
+  <li><strong>Required</strong> on every <code>POST</code>: <code>Idempotency-Key</code>, 1–64 characters from <code>A-Za-z0-9-_</code>. The SDK sends a UUID4 and reuses it across retries of the same call.</li>
+  <li><strong>Scope:</strong> API key's project + method + path. <strong>Identity:</strong> SHA-256 of the body canonicalised with the JSON Canonicalization Scheme (RFC 8785).</li>
+  <li><strong>Replay:</strong> same key and same body returns the original status code and body, with <code>Idempotent-Replayed: true</code>. Same key, different body: <code>409 idempotency_conflict</code>. Same key while the first request is still in progress: <code>409 idempotency_in_progress</code>, retryable.</li>
+  <li><strong>Retention:</strong> at least 24 hours. After that a reused key counts as new.</li>
+  <li><strong>Stored responses:</strong> only 2xx responses are stored for replay; any other outcome releases the key. A key in progress holds a 60 s lease. A request without a body (cancel) is identified as the canonical JSON <code>null</code>.</li>
+  <li><strong>Renewing an expired upload</strong> is a new logical request with a new key.</li>
+</ul>
+
+<h2 id="models">Models</h2>
+<div class="endpoint">
+  <div class="endpoint-head"><span class="method">GET</span><span class="path">/v1/models?limit=&amp;after=</span><span class="note">Models this key can run</span></div>
+  <div class="endpoint-body">
+<pre><code>{
+  "data": [
+    {
+      "id": "fenon/hand-pose-hm",
+      "model_version": "hp_2026_10_26",
+      "modes": ["recorded"],
+      "contract": { "id": "fenon.hand_pose.video", "version": "1.0.0", "schema_sha256": "…" },
+      "limits": { "content_types": ["video/mp4", "video/quicktime", "video/webm"],
+                  "max_size_bytes": 200000000, "max_duration_s": 60, "max_run_s": 1800 },
+      "usage_unit": "frame"
+    }
+  ],
+  "next_cursor": null
+}</code></pre>
+<p><code>model_version</code> is immutable; <code>id</code> may move to newer versions. <code>limit</code> 1–100 (default 100); pass <code>next_cursor</code> as <code>after</code>.</p>
+  </div>
+</div>
+
+<h2 id="uploads">Uploads</h2>
+<div class="endpoint">
+  <div class="endpoint-head"><span class="method post">POST</span><span class="path">/v1/uploads</span><span class="note">Reserve an upload</span></div>
+  <div class="endpoint-body">
+<pre><code>Request   { "filename": "clip.mp4", "content_type": "video/mp4", "size_bytes": 48211533 }
+
+201       { "id": "upl_7k2mq9x4ab3d", "status": "pending", "upload_url": "https://&lt;r2-presigned-url&gt;",
+            "method": "PUT", "headers": { "Content-Type": "video/mp4", "Content-Length": "48211533" },
+            "expires_at": "2026-10-26T09:40:00Z" }</code></pre>
+<ul>
+  <li>The client PUTs the raw bytes to <code>upload_url</code> with exactly <code>headers</code> and no <code>Authorization</code>. The URL is signed for exactly <code>size_bytes</code>. One PUT per upload; no multipart.</li>
+  <li>The storage key is chosen by the service, never taken from <code>filename</code>. Uploads are not tied to a model and can be reused by several runs (for example a preview and then the full video). A content type or size that no listed model accepts is rejected here (<code>415</code>, <code>413</code>).</li>
+</ul>
+  </div>
+</div>
+<div class="endpoint">
+  <div class="endpoint-head"><span class="method">GET</span><span class="path">/v1/uploads/{id}</span><span class="note">Upload state and video details (website; not used by the SDK)</span></div>
+  <div class="endpoint-body">
+<pre><code>{ "id": "upl_7k2mq9x4ab3d", "status": "ready", "content_type": "video/mp4", "size_bytes": 48211533,
+  "media": { "duration_s": 10.0, "fps": 30.0, "frame_count": 300, "width": 1280, "height": 720,
+             "constant_frame_rate": true },
+  "error": null, "created_at": "…" }</code></pre>
+<p>Also returns <code>filename</code>. Statuses: <code>pending</code> (bytes not received), <code>probing</code>, <code>ready</code> (<code>media</code> filled), <code>invalid</code> (<code>error</code> filled with <code>input_unreadable</code>). This is for the website's video details; runs never wait on it, and model-specific checks such as duration happen in the run.</p>
+  </div>
+</div>
+
+<h2 id="runs">Runs</h2>
+<div class="endpoint">
+  <div class="endpoint-head"><span class="method post">POST</span><span class="path">/v1/runs</span><span class="note">Start a model on uploaded input</span></div>
+  <div class="endpoint-body">
+<pre><code>Request
+{
+  "model": "fenon/hand-pose-hm",
+  "model_version": null,
+  "input": { "video": "upl_7k2mq9x4ab3d", "range": { "start_s": 2.0, "end_s": 5.0 } }
+}
+
+202   <span class="c">// the run object (below), status "preparing_input"</span></code></pre>
+<p><code>input</code> must match the contract's input schema, else <code>422 input_invalid</code> with the field in <code>error.details.field</code>. The upload must be in this project with its bytes received at the reserved size, else <code>422 upload_not_ready</code> or <code>422 upload_size_mismatch</code>; the upload does not need to be probed yet. The upload's content type and size are checked against the model's limits (<code>415</code>, <code>413</code>). An upload the input names that isn't in this project is <code>422 input_invalid</code> with <code>details.field</code> <code>/input/video</code>; <code>end_s ≤ start_s</code> is <code>422 input_invalid</code>. Decoding, duration and frame-rate checks happen while the run is <code>preparing_input</code>; a failure there ends the run <code>failed</code> with <code>stage: preparing_input</code>, and so does a range that becomes empty after clipping to the video (<code>input_invalid</code>, zero usage). <code>model_version</code> optionally pins an exact version (the SDK doesn't send it); one that doesn't exist is <code>404 model_not_found</code>.</p>
+  </div>
+</div>
+<div class="endpoint">
+  <div class="endpoint-head"><span class="method">GET</span><span class="path">/v1/runs?limit=&amp;after=</span><span class="note">This project's runs, newest first</span></div>
+  <div class="endpoint-body"><p>Returns <code>{ "data": [run, …], "next_cursor": … }</code>. Used for run history (the website's Runs list).</p></div>
+</div>
+<div class="endpoint">
+  <div class="endpoint-head"><span class="method">GET</span><span class="path">/v1/runs/{id}</span><span class="note">One run</span></div>
+  <div class="endpoint-body"><p>The run object. While not final, the response carries <code>Fenon-Poll-After-Ms</code>.</p></div>
+</div>
+<div class="endpoint">
+  <div class="endpoint-head"><span class="method post">POST</span><span class="path">/v1/runs/{id}/cancel</span><span class="note">Stop a run</span></div>
+  <div class="endpoint-body"><p>Returns the run object. A non-final run becomes <code>canceled</code>; a final run is returned unchanged. A client's wait ending never cancels a run.</p></div>
+</div>
+
+<h2 id="run-object">The run object</h2>
+<pre><code>{
+  "id": "run_q3w8e1r5t2y6",
+  "object": "run",
+  "model": "fenon/hand-pose-hm",
+  "model_version": "hp_2026_10_26",
+  "contract": { "id": "fenon.hand_pose.video", "version": "1.0.0", "schema_sha256": "…" },
+  "status": "succeeded",
+  "input": { "video": "upl_7k2mq9x4ab3d", "range": { "start_s": 2.0, "end_s": 5.0 } },
+  "input_files": { "video": { "id": "upl_7k2mq9x4ab3d", "filename": "clip.mp4", "size_bytes": 48211533 } },
+  "progress": { "completed": 90, "total": 90, "unit": "frame" },
+  "usage_estimate": { "unit": "frame", "quantity": 90 },
+  "outputs": {
+    "annotations": { "content_type": "application/x-ndjson", "url": "https://&lt;r2-presigned-url&gt;",
+                     "url_expires_at": "2026-10-26T10:45:00Z", "size_bytes": 634044 }
+  },
+  "result": { <span class="c">… defined by the contract (Part 3) …</span> },
+  "usage": { "unit": "frame", "quantity": 90 },
+  "error": null,
+  "created_at": "2026-10-26T09:31:02Z", "started_at": "2026-10-26T09:31:03Z", "finished_at": "2026-10-26T09:32:30Z"
+}</code></pre>
+<div class="wrap"><table>
+<thead><tr><th>status</th><th>Final</th><th>Non-null fields</th></tr></thead>
+<tbody>
+<tr><td><code>preparing_input</code></td><td>No</td><td>Base fields only</td></tr>
+<tr><td><code>queued</code></td><td>No</td><td>+ <code>usage_estimate</code></td></tr>
+<tr><td><code>processing_frames</code></td><td>No</td><td>+ <code>started_at</code>, <code>progress</code></td></tr>
+<tr><td><code>writing_results</code></td><td>No</td><td>+ <code>started_at</code>, <code>progress</code></td></tr>
+<tr><td><code>succeeded</code></td><td>Yes</td><td>+ <code>outputs</code>, <code>result</code>, <code>usage</code>, <code>finished_at</code></td></tr>
+<tr><td><code>failed</code></td><td>Yes</td><td>+ <code>error</code>, <code>usage</code> (quantity 0), <code>finished_at</code></td></tr>
+<tr><td><code>canceled</code></td><td>Yes</td><td>+ <code>error</code> (code <code>canceled</code>), <code>usage</code> (quantity 0), <code>finished_at</code></td></tr>
+</tbody></table></div>
+<p>Base fields (always present): <code>id</code>, <code>object</code>, <code>model</code>, <code>model_version</code>, <code>contract</code>, <code>status</code>, <code>input</code>, <code>input_files</code> (each upload the input refers to, with its display filename, for run history), <code>created_at</code>. The website's stage display and the SDK's <code>job.status</code> both read <code>status</code>.</p>
+
+<h2 id="usage">Usage</h2>
+<p><code>{ "unit": "&lt;model's usage_unit&gt;", "quantity": N }</code>. For hand pose: frames processed inside the run's range. Failed and canceled runs, rejected input, queue time, retries, uploads, polling and downloads have zero usage. How usage is priced is decided later.</p>
+
+<h2 id="errors">Errors</h2>
+<pre><code>{ "error": { "code": "rate_limited", "message": "Too many requests.", "fix": "Wait and send the same request again.",
+             "retryable": true, "retry_after_s": 3, "request_id": "req_m4n7b2v9c1x5", "details": {} } }</code></pre>
+<div class="wrap"><table>
+<thead><tr><th>HTTP</th><th>code</th><th>Retryable</th><th>SDK</th></tr></thead>
+<tbody>
+<tr><td>400</td><td><code>invalid_request</code></td><td>No</td><td><code>InvalidInputError</code></td></tr>
+<tr><td>401 · 403</td><td><code>invalid_api_key</code>, <code>permission_denied</code></td><td>No</td><td><code>AuthError</code></td></tr>
+<tr><td>402</td><td><code>insufficient_credits</code></td><td>No</td><td><code>CreditsError</code></td></tr>
+<tr><td>404</td><td><code>not_found</code>, <code>model_not_found</code></td><td>No</td><td><code>NotFoundError</code></td></tr>
+<tr><td>408</td><td><code>request_timeout</code></td><td>Yes</td><td><code>NetworkError</code> after retries</td></tr>
+<tr><td>405</td><td><code>method_not_allowed</code></td><td>No</td><td><code>FenonError</code></td></tr>
+<tr><td>409</td><td><code>idempotency_conflict</code> / <code>idempotency_in_progress</code></td><td>No / Yes</td><td><code>ServerError</code></td></tr>
+<tr><td>413 · 415 · 422</td><td><code>file_too_large</code>, <code>request_too_large</code>, <code>unsupported_media_type</code>, <code>input_invalid</code>, <code>upload_not_ready</code>, <code>upload_size_mismatch</code></td><td>No</td><td><code>InvalidInputError</code></td></tr>
+<tr><td>429</td><td><code>rate_limited</code></td><td>Yes</td><td><code>RateLimitError</code> after retries</td></tr>
+<tr><td>500 · 503</td><td><code>internal_error</code>, <code>unavailable</code></td><td>Yes</td><td><code>ServerError</code> after retries</td></tr>
+<tr><td>501</td><td><code>not_implemented</code></td><td>No</td><td><code>ServerError</code></td></tr>
+</tbody></table></div>
+<p><code>not_implemented</code>: the endpoint is defined, but a part it needs isn't available on this deployment.</p>
+<h3>Run errors</h3>
+<pre><code>"error": { "code": "variable_frame_rate", "message": "The frame rate changes partway through this file.",
+           "fix": "Export it again at a constant frame rate.", "retryable": false,
+           "stage": "preparing_input", "frame": 141, "timestamp_s": 4.7 }</code></pre>
+<p><code>stage</code> is the status the run was in when it stopped. <code>frame</code> and <code>timestamp_s</code> are present only when the failure is tied to one frame. Shared codes: <code>input_unreadable</code>, <code>processing_failed</code>, <code>deadline_exceeded</code> (the run passed the model's <code>max_run_s</code>), <code>internal_error</code>, <code>canceled</code>. Contracts may add codes.</p>
+
+<h2 id="retries">Retries and timeouts</h2>
+<div class="wrap"><table>
+<thead><tr><th>Call</th><th>Retried on</th><th>Schedule</th></tr></thead>
+<tbody>
+<tr><td>Fenon API calls</td><td>Network errors, 408, 409 <code>idempotency_in_progress</code>, 429, 5xx except 501</td><td><code>max_retries</code> retries (default 2, so 3 attempts in total); before retry <i>n</i> (from 0) wait random(0, min(8, 0.5 × 2<sup><i>n</i></sup>)) s</td></tr>
+<tr><td>Upload PUT, output download</td><td>Network errors, 408, 429, 500, 502, 503, 504</td><td>5 attempts; waits 1, 2, 4, 8 s</td></tr>
+<tr><td>Polling a run</td><td>A poll that fails with a network error, 408, 429 or 5xx other than 501 after its own retries</td><td>Up to 8 such polls in a row, then the last error is raised with <code>.job</code>; any other error is raised at once with <code>.job</code></td></tr>
+</tbody></table></div>
+<ul>
+  <li><strong>Retry hints</strong> (<code>retry-after-ms</code>, then <code>Retry-After</code> in seconds or as a date, then <code>retry_after_s</code>) replace the computed wait when they are 120 s or less. A longer hint means the call is not retried: the error is raised with <code>retry_after_s</code> set. This matches the OpenAI SDK.</li>
+  <li><strong>Poll interval:</strong> <code>Fenon-Poll-After-Ms</code>, clamped by the client to 250 ms – 60 s; without it, 2 s, growing ×1.5 per poll up to 10 s.</li>
+  <li><strong>Timeouts:</strong> connect 10 s; read <code>timeout</code> (default 60 s) per API call; upload and download 300 s per attempt.</li>
+  <li><strong>Never retried:</strong> 400, 401, 402, 403, 404, 405, 409 <code>idempotency_conflict</code>, 413, 415, 422, 501.</li>
+</ul>
+
+<h2 id="modes">Modes</h2>
+<div class="wrap"><table>
+<thead><tr><th>Mode</th><th>Protocol</th><th>Status</th></tr></thead>
+<tbody>
+<tr><td><code>recorded</code></td><td>Runs on uploaded files, as above</td><td>v1</td></tr>
+<tr><td><code>live</code></td><td>Sessions: open, send observations with sequence numbers, receive results, reset episode, close</td><td>Deferred (decision 2026-10-26); defined once for all live models</td></tr>
+</tbody></table></div>
+
+<h2 id="storage">Data the service keeps</h2>
+<p>A proper database (Postgres) holds, per project: uploads (status, size, media), runs (every field of the run object), usage records (one per final run, written in the same transaction as the final status), and idempotency records (key, body hash, stored response, expiry). Run history (<code>GET /v1/runs</code>) is served from it. Uploaded files and outputs live in R2 with no expiry in v1. Run deadlines count from <code>created_at</code>; the service enforces them. Not built yet: in <code>fenon-api</code> these stores are interfaces.</p>
+
+<p class="part">Part 3 · Model contracts</p>
+<h2 id="hand-pose"><code>fenon.hand_pose.video</code> · v1.0.0</h2>
+<p>Hand-pose estimation on one recorded video, following HaMeR as run by <code>Fenon-Robotics/hamer-throughput</code>. Implemented by <code>fenon/hand-pose-hm</code>. SDK: <code>client.pose.hand</code>. Schemas: <code>contracts/fenon.hand_pose.video/1.0.0/</code> (<code>input</code>, <code>result</code>, <code>outputs</code>, <code>row</code>).</p>
+<div class="wrap"><table>
+<thead><tr><th>Item</th><th>Contract</th></tr></thead>
+<tbody>
+<tr><td>Modes</td><td><code>recorded</code></td></tr>
+<tr><td>Input</td><td><code>{"video": "upl_…", "range": {"start_s": …, "end_s": …}}</code>; <code>range</code> optional (whole video). Processed frames are those with <code>start_s ≤ frame_index / fps &lt; end_s</code>; <code>end_s</code> beyond the video is clipped to its end; an empty range is <code>422 input_invalid</code>.</td></tr>
+<tr><td>Frames</td><td>Every frame in the range is processed, no sampling. The video must have a constant frame rate (else <code>variable_frame_rate</code>) and decode through the last frame of the range (else <code>input_unreadable</code> with <code>frame</code> and <code>timestamp_s</code>). Longer than <code>max_duration_s</code>: <code>video_too_long</code>. All three checks happen while the run is <code>preparing_input</code>.</td></tr>
+<tr><td>Outputs</td><td>Exactly one, <code>annotations</code> (<code>application/x-ndjson</code>): one row per processed frame, in frame order (<code>outputs.schema.json</code>)</td></tr>
+<tr><td>Usage unit</td><td><code>frame</code>: frames processed in a succeeded run, including frames with no hands</td></tr>
+<tr><td>Progress unit</td><td><code>frame</code></td></tr>
+</tbody></table></div>
+<h3><code>result</code></h3>
+<pre><code>{
+  "video": { "width": 1280, "height": 720, "fps": 30.0, "frame_count": 300, "duration_s": 10.0 },
+  "range": { "start_s": 2.0, "end_s": 5.0, "start_frame": 60, "end_frame": 150 },
+  "joint_order": ["wrist", "thumb_cmc", "thumb_mcp", "thumb_ip", "thumb_tip", "index_mcp", "…", "pinky_tip"],
+  "camera": { "model": "pinhole", "focal_length_px": 25000.0, "principal_point_px": [640.0, 360.0], "assumed": true }
+}</code></pre>
+<p><code>end_frame</code> is exclusive. <code>focal_length_px</code> is the value the model used (for HaMeR, <code>FOCAL_LENGTH / IMAGE_SIZE × max(width, height)</code> from the checkpoint config).</p>
+
+<h3 id="hp-rows">Output rows (<code>annotations</code>)</h3>
+<pre><code>{"frame_index": 60, "timestamp_sec": 2.0, "image_size": {"width": 1280, "height": 720},
+ "joint_order": "wrist,thumb_cmc,thumb_mcp,thumb_ip,thumb_tip,index_mcp,index_pip,index_dip,index_tip,middle_mcp,middle_pip,middle_dip,middle_tip,ring_mcp,ring_pip,ring_dip,ring_tip,pinky_mcp,pinky_pip,pinky_dip,pinky_tip",
+ "raw_hand_count": 2, "suppressed_duplicate_count": 0,
+ "hands": [{"handedness": "right",
+            "pixel_landmarks": [[812.4, 455.1], …21],
+            "normalized_landmarks": [[0.6347, 0.6321], …21],
+            "landmarks_3d_camera": [[0.031, 0.012, 0.642], …21],
+            "bbox_xyxy": [770.2, 401.8, 905.6, 540.3],
+            "joint_state": ["in_frame_predicted", …21],
+            "joint_confidence": [null, …21],
+            "hand_score": null}]}</code></pre>
+<div class="wrap"><table>
+<thead><tr><th>Field</th><th>Type</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>frame_index</code></td><td>int ≥ 0</td><td>Frame number in the source video</td></tr>
+<tr><td><code>timestamp_sec</code></td><td>number</td><td><code>frame_index / fps</code></td></tr>
+<tr><td><code>image_size</code></td><td><code>{width, height}</code></td><td>Pixels</td></tr>
+<tr><td><code>joint_order</code></td><td>string</td><td>The 21 joint names, comma-separated (same list as <code>result.joint_order</code>)</td></tr>
+<tr><td><code>raw_hand_count</code></td><td>int ≥ 0</td><td>Hands detected before duplicate removal</td></tr>
+<tr><td><code>suppressed_duplicate_count</code></td><td>int ≥ 0</td><td>Hands removed as duplicates</td></tr>
+<tr><td><code>hands</code></td><td>array</td><td>Hands kept; empty when none. Order is not significant</td></tr>
+<tr><td><code>handedness</code></td><td><code>"left" | "right"</code></td><td>Which hand</td></tr>
+<tr><td><code>pixel_landmarks</code></td><td>21 × [x, y]</td><td>Pixels; a joint that can't be projected (<code>z ≤ 1e-6</code>) is <code>[null, null]</code></td></tr>
+<tr><td><code>normalized_landmarks</code></td><td>21 × [x, y]</td><td>Pixels ÷ width, height; <code>[null, null]</code> where the pixel entry is</td></tr>
+<tr><td><code>landmarks_3d_camera</code></td><td>21 × [x, y, z]</td><td>Metres, camera frame; always numbers</td></tr>
+<tr><td><code>bbox_xyxy</code></td><td>4 numbers</td><td>Box around the projectable joints; <code>[null, null, null, null]</code> when none are projectable</td></tr>
+<tr><td><code>joint_state</code></td><td>21 × string</td><td><code>in_frame_predicted</code> (inside the image) or <code>outside_frame_predicted</code> (outside it, or not projectable)</td></tr>
+<tr><td><code>joint_confidence</code>, <code>hand_score</code></td><td>21 × null, null</td><td>Always <code>null</code> for this model</td></tr>
+</tbody></table></div>
+<p><strong>Duplicate removal:</strong> hands are considered largest box first. A hand is dropped when an already kept hand has the same handedness, a box-centre distance under 0.20 × the larger box diagonal, and a mean 2D joint distance under 0.35 × the larger box diagonal (the diagonal is floored at 1 pixel). A hand with any joint that can't be projected is always kept.</p>
+
+<h3 id="frames">Coordinate frames</h3>
+<div class="wrap"><table>
+<thead><tr><th>Space</th><th>Origin</th><th>Axes</th><th>Units</th></tr></thead>
+<tbody>
+<tr><td><code>pixel_landmarks</code>, <code>bbox_xyxy</code></td><td>Top-left of the frame</td><td>x right, y down</td><td>Pixels</td></tr>
+<tr><td><code>normalized_landmarks</code></td><td>Top-left of the frame</td><td>x right, y down</td><td>Fraction of width, height</td></tr>
+<tr><td><code>landmarks_3d_camera</code></td><td>Camera optical centre</td><td>x right, y down, z forward</td><td>Metres</td></tr>
+</tbody></table></div>
+<pre><code>u = focal_length_px · x / z + width / 2
+v = focal_length_px · y / z + height / 2</code></pre>
+<p>Intrinsics are assumed, not accepted. Depth is not metric: HaMeR's assumed focal length is very long (near-orthographic), so <code>z</code> is scale-consistent, not the true distance. Joint positions relative to the wrist, hand shape and 2D landmarks are the reliable outputs.</p>
+
+<h3 id="runner">Runner requirements</h3>
+<p>Differences between hamer-throughput today (commit <code>d743272</code>) and this contract, for whoever runs the model:</p>
+<ol>
+  <li>Write a <code>result</code> manifest (video, range, joint order, camera with the focal length used). Today the focal length is computed (<code>backend.py:382</code>) but never written.</li>
+  <li>Fail with <code>input_unreadable</code> when decoding stops before the last frame of the range. Today decoding stops silently (<code>video.py:56</code>) and the run validates against frames processed.</li>
+  <li>Detect a variable frame rate and fail with <code>variable_frame_rate</code>. Today timestamps assume a constant rate (<code>video.py:58</code>).</li>
+  <li>Process only the run's range (the existing <code>start_frame</code> and <code>max_frames</code> options) and report <code>progress</code> in frames.</li>
+  <li>Remove <code>track_id</code> from the hands written to <code>annotations</code>. It is unique per frame only, but duplicate removal sorts on it (<code>geometry.py:64</code>), so keep it internally until after that step and strip it when writing rows.</li>
+  <li>Report the status transitions <code>preparing_input → queued → processing_frames → writing_results</code>.</li>
+  <li>The worker → API reporting interface (status, progress, results) and what moves an upload from <code>pending</code> to <code>probing</code> are owned by the execution team.</li>
+</ol>
+
+<h2 id="sync">Schemas and versioning</h2>
+<ol>
+  <li><strong>Normative files</strong> (in this folder): <code>openapi.yaml</code> for the shared API; <code>contracts/fenon.hand_pose.video/1.0.0/input.schema.json</code>, <code>result.schema.json</code>, <code>outputs.schema.json</code>, <code>row.schema.json</code> for the model contract. A succeeded run's <code>result</code> and <code>outputs</code> must validate against their schemas. <code>schema_sha256</code> is the SHA-256 of those four files, concatenated in that order. A published version's files never change.</li>
+  <li><strong>SDK types are generated</strong> from them (Pydantic v2); only helpers are hand-written. CI fails if regenerating changes anything.</li>
+  <li><strong>Shared fixtures:</strong> the same example requests, responses and output rows are tested by the service and the SDK.</li>
+  <li><strong>Versions:</strong> a contract's minor version may only add optional fields; anything else is a new major. An SDK that doesn't support a model's contract major raises <code>UnsupportedModelError</code>.</li>
+</ol>
+
+<h2 id="open">Open items</h2>
+<div class="wrap"><table>
+<thead><tr><th>Item</th><th>Status</th></tr></thead>
+<tbody>
+<tr><td>Pricing of usage</td><td>Decided later, from metrics</td></tr>
+<tr><td>Final limits (types, size, duration, <code>max_run_s</code>)</td><td>Values shown are proposals from the Playground design</td></tr>
+<tr><td>Retention and deletion policy</td><td>Required before production</td></tr>
+<tr><td>Base URL, model version format</td><td>Proposed / placeholder</td></tr>
+<tr><td>Live mode protocol</td><td>Deferred</td></tr>
+<tr><td>What Ctrl-C does during a blocking SDK call</td><td>Decided: one best-effort cancel, then re-raise (SDK Behaviour, Ctrl-C)</td></tr>
+</tbody></table></div>
+
+<footer>Fenon · API contract v1 draft · Normative files: openapi.yaml, contracts/ · Decisions: decisions.md</footer>
+</main>
+</div>
+</body>
+</html>

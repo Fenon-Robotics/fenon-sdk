@@ -1,0 +1,428 @@
+openapi: 3.1.0
+info:
+  title: Fenon API
+  version: 1.0.0-draft
+  description: >
+    Shared API for all Fenon models (Part 2 of api-contract.html). Model-specific input and result shapes are
+    defined by each model contract under contracts/<id>/<version>/. This file is normative for every shared
+    endpoint, field, type and nullability.
+servers:
+  - url: https://api.fenon.ai/v1
+security:
+  - apiKey: []
+
+paths:
+  /models:
+    get:
+      operationId: listModels
+      summary: Models this key can run
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/After"
+      responses:
+        "200":
+          description: A page of models.
+          headers: { X-Request-Id: { $ref: "#/components/headers/X-Request-Id" } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelPage" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /uploads:
+    post:
+      operationId: createUpload
+      summary: Reserve an upload and get a presigned URL
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UploadCreate" }
+      responses:
+        "201":
+          description: Upload reserved.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            Idempotent-Replayed: { $ref: "#/components/headers/Idempotent-Replayed" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UploadReservation" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /uploads/{upload_id}:
+    get:
+      operationId: getUpload
+      summary: Upload state and probed video details (used by the website, not the SDK)
+      parameters:
+        - name: upload_id
+          in: path
+          required: true
+          schema: { $ref: "#/components/schemas/UploadId" }
+      responses:
+        "200":
+          description: The upload.
+          headers: { X-Request-Id: { $ref: "#/components/headers/X-Request-Id" } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Upload" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /runs:
+    post:
+      operationId: createRun
+      summary: Start a model on uploaded input (recorded mode)
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RunCreate" }
+      responses:
+        "202":
+          description: Run accepted (status preparing_input).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            Idempotent-Replayed: { $ref: "#/components/headers/Idempotent-Replayed" }
+            Fenon-Poll-After-Ms: { $ref: "#/components/headers/Fenon-Poll-After-Ms" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Run" }
+        default: { $ref: "#/components/responses/Error" }
+    get:
+      operationId: listRuns
+      summary: This project's runs, newest first
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/After"
+      responses:
+        "200":
+          description: A page of runs.
+          headers: { X-Request-Id: { $ref: "#/components/headers/X-Request-Id" } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunPage" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /runs/{run_id}:
+    get:
+      operationId: getRun
+      summary: One run
+      parameters:
+        - $ref: "#/components/parameters/RunIdPath"
+      responses:
+        "200":
+          description: The run. Fenon-Poll-After-Ms is present while the run is not final.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            Fenon-Poll-After-Ms: { $ref: "#/components/headers/Fenon-Poll-After-Ms" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Run" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /runs/{run_id}/cancel:
+    post:
+      operationId: cancelRun
+      summary: Stop a run (a final run is returned unchanged)
+      parameters:
+        - $ref: "#/components/parameters/RunIdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: The run after the cancel request.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            Idempotent-Replayed: { $ref: "#/components/headers/Idempotent-Replayed" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Run" }
+        default: { $ref: "#/components/responses/Error" }
+
+components:
+  securitySchemes:
+    apiKey:
+      type: http
+      scheme: bearer
+      description: "Project API key, sent as `Authorization: Bearer fenon_…`. A key sees only its own project's uploads and runs."
+
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 100 }
+    After:
+      name: after
+      in: query
+      description: The next_cursor of the previous page.
+      schema: { type: string }
+    RunIdPath:
+      name: run_id
+      in: path
+      required: true
+      schema: { $ref: "#/components/schemas/RunId" }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >
+        Scope: project + method + path. Identity: SHA-256 of the body canonicalised with the JSON Canonicalization Scheme (RFC 8785).
+        Same key and body replays the original status and body with Idempotent-Replayed: true; same key and a
+        different body is 409 idempotency_conflict; same key while the first is in progress is 409
+        idempotency_in_progress (retryable). Kept at least 24 hours. Only 2xx responses are stored; any other
+        outcome releases the key. A key in progress holds a 60 s lease. A request without a body is identified as
+        the canonical JSON null.
+      schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,64}$" }
+
+  headers:
+    X-Request-Id:
+      schema: { type: string, pattern: "^req_[0-9a-z]{12}$" }
+    Fenon-Poll-After-Ms:
+      description: Suggested wait before the next poll, in milliseconds. Present while a run is not final.
+      schema: { type: integer, minimum: 0 }
+    Retry-After:
+      description: Seconds, or an HTTP date. On 429 and 503. Clients use retry-after-ms first when present.
+      schema: { type: string }
+    Retry-After-Ms:
+      description: "Header name retry-after-ms: milliseconds to wait before retrying. On 429 and 503."
+      schema: { type: integer, minimum: 0 }
+    Idempotent-Replayed:
+      description: "true when this response is the stored response of an earlier request with the same Idempotency-Key."
+      schema: { type: string, enum: ["true"] }
+
+  responses:
+    Error:
+      description: >
+        Any error. 400 invalid_request; 401 invalid_api_key (with WWW-Authenticate: Bearer); 402 insufficient_credits;
+        403 permission_denied; 404 not_found, model_not_found; 405 method_not_allowed; 408 request_timeout;
+        409 idempotency_conflict, idempotency_in_progress; 413 file_too_large, request_too_large;
+        415 unsupported_media_type; 422 input_invalid, upload_not_ready, upload_size_mismatch; 429 rate_limited;
+        500 internal_error; 501 not_implemented (a part the endpoint needs isn't available on this deployment;
+        never retried); 503 unavailable.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+        Retry-After: { $ref: "#/components/headers/Retry-After" }
+        retry-after-ms: { $ref: "#/components/headers/Retry-After-Ms" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  schemas:
+    UploadId: { type: string, pattern: "^upl_[0-9a-z]{12}$" }
+    RunId: { type: string, pattern: "^run_[0-9a-z]{12}$" }
+    Timestamp: { type: string, format: date-time }
+
+    ContractRef:
+      type: object
+      additionalProperties: false
+      required: [id, version, schema_sha256]
+      properties:
+        id: { type: string, examples: [fenon.hand_pose.video] }
+        version: { type: string, pattern: "^[0-9]+\\.[0-9]+\\.[0-9]+$" }
+        schema_sha256: { type: string, pattern: "^[0-9a-f]{64}$", description: "SHA-256 of the contract's input, result, outputs and row schema files, concatenated in that order. A published version's files never change." }
+
+    Limits:
+      type: object
+      additionalProperties: false
+      required: [content_types, max_size_bytes, max_duration_s, max_run_s]
+      properties:
+        content_types: { type: array, items: { type: string }, minItems: 1 }
+        max_size_bytes: { type: integer, minimum: 1 }
+        max_duration_s: { type: number, exclusiveMinimum: 0 }
+        max_run_s: { type: integer, minimum: 1, description: "A run still not final after this many seconds fails with deadline_exceeded." }
+
+    Model:
+      type: object
+      required: [id, model_version, modes, contract, limits, usage_unit]
+      properties:
+        id: { type: string, examples: [fenon/hand-pose-hm] }
+        model_version: { type: string, description: Immutable. }
+        modes: { type: array, items: { enum: [recorded, live] }, minItems: 1 }
+        contract: { $ref: "#/components/schemas/ContractRef" }
+        limits: { $ref: "#/components/schemas/Limits" }
+        usage_unit: { type: string, examples: [frame] }
+
+    ModelPage:
+      type: object
+      required: [data, next_cursor]
+      properties:
+        data: { type: array, items: { $ref: "#/components/schemas/Model" } }
+        next_cursor: { type: [string, "null"] }
+
+    UploadCreate:
+      type: object
+      additionalProperties: false
+      required: [filename, content_type, size_bytes]
+      properties:
+        filename: { type: string, minLength: 1, maxLength: 255, description: "Display only; never used as the storage key." }
+        content_type: { type: string }
+        size_bytes: { type: integer, minimum: 1 }
+
+    UploadReservation:
+      type: object
+      required: [id, status, upload_url, method, headers, expires_at]
+      properties:
+        id: { $ref: "#/components/schemas/UploadId" }
+        status: { const: pending }
+        upload_url: { type: string, format: uri, x-repr: false, description: "Presigned R2 URL. Send no Authorization header." }
+        method: { const: PUT }
+        headers:
+          type: object
+          additionalProperties: { type: string }
+          description: Send exactly these headers with the PUT (Content-Type, Content-Length).
+        expires_at: { $ref: "#/components/schemas/Timestamp" }
+
+    Upload:
+      type: object
+      required: [id, status, filename, content_type, size_bytes, media, error, created_at]
+      properties:
+        id: { $ref: "#/components/schemas/UploadId" }
+        filename: { type: string, description: Display name sent when the upload was reserved. }
+        status: { enum: [pending, probing, ready, invalid] }
+        content_type: { type: string }
+        size_bytes: { type: integer, minimum: 1 }
+        media:
+          description: Filled when status is ready.
+          oneOf:
+            - type: "null"
+            - type: object
+              required: [duration_s, fps, frame_count, width, height, constant_frame_rate]
+              properties:
+                duration_s: { type: number, exclusiveMinimum: 0 }
+                fps: { type: number, exclusiveMinimum: 0 }
+                frame_count: { type: integer, minimum: 1 }
+                width: { type: integer, minimum: 1 }
+                height: { type: integer, minimum: 1 }
+                constant_frame_rate: { type: boolean }
+        error:
+          description: Filled when status is invalid (input_unreadable). Model-specific checks such as duration happen in the run, not here.
+          oneOf:
+            - type: "null"
+            - $ref: "#/components/schemas/ErrorObject"
+        created_at: { $ref: "#/components/schemas/Timestamp" }
+
+    RunCreate:
+      type: object
+      additionalProperties: false
+      required: [model, input]
+      properties:
+        model: { type: string }
+        model_version: { type: [string, "null"], description: "Optional pin to an exact version; null uses the version the model ID points to. The SDK doesn't send it in v1." }
+        input:
+          type: object
+          description: Must match the model contract's input schema (for fenon.hand_pose.video, contracts/fenon.hand_pose.video/1.0.0/input.schema.json).
+
+    RunStatus:
+      enum: [preparing_input, queued, processing_frames, writing_results, succeeded, failed, canceled]
+      description: Fixed for all of /v1. Final statuses are succeeded, failed and canceled.
+
+    Progress:
+      type: object
+      required: [completed, total, unit]
+      properties:
+        completed: { type: integer, minimum: 0 }
+        total: { type: integer, minimum: 0 }
+        unit: { type: string }
+
+    Usage:
+      type: object
+      description: How much of the model's usage unit a run consumed.
+      required: [unit, quantity]
+      properties:
+        unit: { type: string }
+        quantity: { type: integer, minimum: 0 }
+
+    OutputFile:
+      type: object
+      required: [content_type, url, url_expires_at, size_bytes]
+      properties:
+        content_type: { type: string }
+        url: { type: string, format: uri, x-repr: false, description: "Presigned R2 URL. Send no Authorization header. Fetch the run again for a fresh URL." }
+        url_expires_at: { $ref: "#/components/schemas/Timestamp" }
+        size_bytes: { type: integer, minimum: 0 }
+
+    Run:
+      type: object
+      required: [id, object, model, model_version, contract, status, input, input_files, progress, usage_estimate, outputs, result, usage, error, created_at, started_at, finished_at]
+      description: >
+        Non-null by status: preparing_input: base fields only; queued: + usage_estimate; processing_frames and
+        writing_results: + started_at, progress; succeeded: + outputs, result, usage, finished_at; failed: + error,
+        usage (0), finished_at; canceled: + error (code canceled), usage (0), finished_at. The run deadline counts
+        from created_at.
+      properties:
+        id: { $ref: "#/components/schemas/RunId" }
+        object: { const: run }
+        model: { type: string }
+        model_version: { type: string }
+        contract: { $ref: "#/components/schemas/ContractRef" }
+        status: { $ref: "#/components/schemas/RunStatus" }
+        input: { type: object, description: "As sent, per the contract's input schema." }
+        input_files:
+          type: object
+          description: Each upload the input refers to, keyed by input field, for display in run history.
+          additionalProperties:
+            type: object
+            required: [id, filename, size_bytes]
+            properties:
+              id: { $ref: "#/components/schemas/UploadId" }
+              filename: { type: string }
+              size_bytes: { type: integer, minimum: 1 }
+        progress: { oneOf: [{ type: "null" }, { $ref: "#/components/schemas/Progress" }] }
+        usage_estimate: { oneOf: [{ type: "null" }, { $ref: "#/components/schemas/Usage" }] }
+        outputs:
+          oneOf:
+            - type: "null"
+            - type: object
+              additionalProperties: { $ref: "#/components/schemas/OutputFile" }
+              description: Named output files. Must validate against the contract's outputs schema (fenon.hand_pose.video requires exactly annotations, application/x-ndjson).
+        result:
+          description: Defined by the contract's result schema.
+          oneOf: [{ type: "null" }, { type: object }]
+        usage: { oneOf: [{ type: "null" }, { $ref: "#/components/schemas/Usage" }] }
+        error: { oneOf: [{ type: "null" }, { $ref: "#/components/schemas/RunErrorObject" }] }
+        created_at: { $ref: "#/components/schemas/Timestamp" }
+        started_at: { oneOf: [{ type: "null" }, { $ref: "#/components/schemas/Timestamp" }] }
+        finished_at: { oneOf: [{ type: "null" }, { $ref: "#/components/schemas/Timestamp" }] }
+
+    RunPage:
+      type: object
+      required: [data, next_cursor]
+      properties:
+        data: { type: array, items: { $ref: "#/components/schemas/Run" } }
+        next_cursor: { type: [string, "null"] }
+
+    ErrorObject:
+      type: object
+      required: [code, message, fix, retryable, retry_after_s, details]
+      properties:
+        code: { type: string, description: "May grow; clients keep unknown codes as they are. Run failures share input_unreadable, processing_failed, deadline_exceeded, internal_error, canceled; contracts add their own (fenon.hand_pose.video: video_too_long, variable_frame_rate)." }
+        message: { type: string, description: Never contains keys or presigned URLs. }
+        fix: { type: [string, "null"] }
+        retryable: { type: boolean }
+        retry_after_s: { type: [number, "null"], minimum: 0 }
+        details: { type: object, description: "Always present. For input_invalid: { field } as a JSON Pointer (RFC 6901) into the request body; for not_implemented: { port }." }
+
+    RunErrorObject:
+      allOf:
+        - $ref: "#/components/schemas/ErrorObject"
+        - type: object
+          required: [stage]
+          properties:
+            stage:
+              enum: [preparing_input, queued, processing_frames, writing_results]
+              description: The status the run was in when it stopped.
+            frame: { type: [integer, "null"], minimum: 0, description: Present when the failure is tied to one frame. }
+            timestamp_s: { type: [number, "null"], minimum: 0 }
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          allOf:
+            - $ref: "#/components/schemas/ErrorObject"
+            - type: object
+              required: [request_id]
+              properties:
+                request_id: { type: string, pattern: "^req_[0-9a-z]{12}$" }
