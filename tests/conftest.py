@@ -11,14 +11,19 @@ from _support import ISOLATED, TEST_API_KEY, FakeRuntime, Handler, refuse
 
 from fenon import Fenon
 from fenon._core.http import ClientConfig, HttpClients, open_http_clients
+from fenon.models.pose import base as pose_base
 
 
 @pytest.fixture(autouse=True)
 def no_fenon_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep FENON_* variables from the developer's shell out of every test."""
     for name in list(os.environ):
         if name.upper().startswith("FENON_"):
             monkeypatch.delenv(name)
+
+
+@pytest.fixture(autouse=True)
+def live_mode_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pose_base, "LIVE_MODE_AVAILABLE", True)
 
 
 @pytest.fixture
@@ -28,7 +33,6 @@ def fake_runtime() -> FakeRuntime:
 
 @pytest.fixture
 def make_clients(fake_runtime: FakeRuntime) -> Iterator[Callable[..., HttpClients]]:
-    """Build HTTP clients on mock transports; every client built is closed after the test."""
     built: list[HttpClients] = []
 
     def factory(
@@ -58,7 +62,6 @@ def make_clients(fake_runtime: FakeRuntime) -> Iterator[Callable[..., HttpClient
 
 @pytest.fixture
 def make_fenon(fake_runtime: FakeRuntime) -> Iterator[Callable[..., Fenon]]:
-    """Build ``Fenon`` clients on mock transports; every client built is closed after the test."""
     built: list[Fenon] = []
 
     def factory(api: Handler | None = None, storage: Handler | None = None, *, max_retries: int = 2) -> Fenon:

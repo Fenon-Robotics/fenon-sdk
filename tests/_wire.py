@@ -17,8 +17,6 @@ Reply = tuple[int, dict[str, str], bytes]
 
 @dataclass(frozen=True)
 class WireRequest:
-    """One request as the server received it; header names are lower-cased."""
-
     method: str
     path: str
     query: str
@@ -30,13 +28,10 @@ Responder = Reply | Callable[[WireRequest], Reply]
 
 
 def json_reply(status: int, body: Any, headers: dict[str, str] | None = None) -> Reply:
-    """Return a JSON reply."""
     return status, {"Content-Type": "application/json", **(headers or {})}, json.dumps(body).encode()
 
 
 class _QuietServer(ThreadingHTTPServer):
-    """A threading HTTP server that treats a client hanging up mid-response as normal."""
-
     daemon_threads = True
 
     @override
@@ -46,8 +41,6 @@ class _QuietServer(ThreadingHTTPServer):
 
 
 class Wire:
-    """A local HTTP server that answers each route with its scripted replies, repeating the last one."""
-
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._routes: dict[tuple[str, str], list[Responder]] = {}
@@ -92,12 +85,10 @@ class Wire:
         self._thread.start()
 
     def route(self, method: str, path: str, *replies: Responder) -> None:
-        """Script the replies for one route."""
         with self._lock:
             self._routes[(method, path)] = list(replies)
 
     def reply(self, request: WireRequest) -> Reply:
-        """Record a request and return its route's next reply; an unrouted request gets a 599."""
         with self._lock:
             self.requests.append(request)
             script = self._routes.get((request.method, request.path))
@@ -107,12 +98,10 @@ class Wire:
         return responder(request) if callable(responder) else responder
 
     def received(self, method: str, path: str) -> list[WireRequest]:
-        """Return the requests received on one route."""
         with self._lock:
             return [r for r in self.requests if r.method == method and r.path == path]
 
     def close(self) -> None:
-        """Stop the server."""
         self._server.shutdown()
         self._server.server_close()
         self._thread.join()

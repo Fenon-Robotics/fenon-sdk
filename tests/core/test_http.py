@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import UTC, timedelta
 from email.utils import format_datetime
 from pathlib import Path
@@ -17,7 +18,8 @@ from _support import TEST_API_KEY, FakeRuntime, Recorder, error_response, json_r
 
 from fenon import __version__
 from fenon._core import http
-from fenon._core._generated import Usage
+from fenon._core._generated import RunUsage as Usage
+from fenon._core.config import DEFAULT_BASE_URL
 from fenon._core.errors import (
     AuthError,
     FenonError,
@@ -33,7 +35,7 @@ from fenon._core.http import (
     Runtime,
     measure_upload_file,
 )
-from fenon._core.settings import DEFAULT_BASE_URL, Settings
+from fenon._core.settings import Settings
 
 MakeClients = Callable[..., HttpClients]
 STORAGE_URL = "https://storage.example.test/bucket/upl_7k2mq9x4ab3d?X-Amz-Signature=secret-signature"
@@ -246,6 +248,41 @@ class TestApiClient:
             make_clients(api=conflict).api.request("POST", "/runs", json_body={})
         assert len(conflict.requests) == 1
         assert caught.value.code == "idempotency_conflict"
+
+    @pytest.mark.parametrize(
+        ("status", "retryable", "attempts"),
+        [(503, False, 1), (500, False, 1), (429, False, 1), (409, True, 3), (422, True, 3)],
+    )
+    def test_the_error_body_decides_whether_to_retry(
+        self, make_clients: MakeClients, status: int, retryable: bool, attempts: int
+    ) -> None:
+        recorder = Recorder([error_response(status, "signalled", retryable=retryable)])
+        with pytest.raises(FenonError) as caught:
+            make_clients(api=recorder).api.request("POST", "/runs", json_body={})
+        assert len(recorder.requests) == attempts
+        assert caught.value.retryable is retryable
+
+    @pytest.mark.parametrize(
+        ("status", "attempts"),
+        [(408, 3), (429, 3), (500, 3), (502, 3), (503, 3), (504, 3), (400, 1), (409, 1), (501, 1), (505, 1)],
+    )
+    @pytest.mark.parametrize(
+        "body",
+        [
+            b"<html>Bad Gateway</html>",
+            b"",
+            b'{"error": {"code": "unavailable", "message": "Down."}}',
+            b'{"error": {"code": "unavailable", "message": "Down.", "retryable": "yes"}}',
+        ],
+    )
+    def test_a_response_without_a_retryable_flag_follows_the_status_rule(
+        self, make_clients: MakeClients, status: int, attempts: int, body: bytes
+    ) -> None:
+        recorder = Recorder([httpx2.Response(status, content=body)])
+        with pytest.raises(FenonError) as caught:
+            make_clients(api=recorder).api.request("POST", "/runs", json_body={})
+        assert len(recorder.requests) == attempts
+        assert caught.value.retryable is (attempts > 1)
 
     def test_zero_retries_means_one_attempt(self, make_clients: MakeClients) -> None:
         recorder = Recorder([error_response(503, "unavailable")])
@@ -665,6 +702,45 @@ class TestStorageClient:
         with pytest.raises(StorageUrlRejectedError):
             make_clients(storage=Recorder([httpx2.Response(403)])).storage.download(STORAGE_URL)
 
+    def test_download_to_streams_into_the_file_and_restarts_after_a_dropped_body(
+        self, make_clients: MakeClients, fake_runtime: FakeRuntime
+    ) -> None:
+        body = bytes(range(256)) * 8
+        recorder = Recorder(
+            [
+                httpx2.Response(200, stream=DroppedBody(body[:300])),
+                httpx2.Response(200, content=body),
+            ]
+        )
+        destination = io.BytesIO(b"stale bytes that must not survive")
+        written = make_clients(storage=recorder).storage.download_to(STORAGE_URL, destination)
+        assert (written, destination.getvalue()) == (len(body), body)
+        assert len(recorder.requests) == 2
+        assert fake_runtime.sleeps == [1.0]
+
+    @pytest.mark.parametrize("status", [403, 404])
+    def test_download_to_with_a_refused_or_missing_object(
+        self, make_clients: MakeClients, status: int
+    ) -> None:
+        with pytest.raises(StorageUrlRejectedError):
+            make_clients(storage=Recorder([httpx2.Response(status)])).storage.download_to(
+                STORAGE_URL, io.BytesIO()
+            )
+
+    def test_an_upload_answered_404_is_a_storage_error_not_a_refusal(
+        self, make_clients: MakeClients, video: Path
+    ) -> None:
+        with pytest.raises(ServerError) as caught:
+            make_clients(storage=Recorder([httpx2.Response(404)])).storage.upload_file(
+                STORAGE_URL,
+                method="PUT",
+                headers=reserved_headers(video),
+                path=video,
+                size_bytes=video.stat().st_size,
+            )
+        assert not isinstance(caught.value, StorageUrlRejectedError)
+        assert caught.value.code == "storage_error"
+
     def test_storage_never_receives_the_api_key(self, make_clients: MakeClients, video: Path) -> None:
         recorder = Recorder([httpx2.Response(200, content=b"x")])
         clients = make_clients(storage=recorder)
@@ -823,3 +899,12 @@ def test_request_ids_are_logged_only_in_the_contract_form(
     assert "request=unrecognised" in caplog.text
     assert "id-leak" not in caplog.text
     assert second.request_id == "https://s.test/o?X-Amz-Signature=id-leak"
+
+
+class DroppedBody(httpx2.SyncByteStream):
+    def __init__(self, first_part: bytes) -> None:
+        self._first_part = first_part
+
+    def __iter__(self) -> Iterator[bytes]:
+        yield self._first_part
+        raise httpx2.ReadError("connection dropped mid-body")

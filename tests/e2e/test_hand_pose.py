@@ -1,4 +1,4 @@
-"""End-to-end tests of ``client.pose.hand`` over real sockets, as the README writes it."""
+"""End-to-end tests of recorded-mode ``client.pose.hand`` over real sockets (recorded mode: coming soon)."""
 
 from __future__ import annotations
 
@@ -54,9 +54,7 @@ def video(tmp_path: Path) -> Path:
 
 def run_reply(status: str, **fields: Any) -> Reply:
     body = hand_run_body(status, **fields)
-    return json_reply(
-        202 if status == "preparing_input" else 200, body, None if status == "succeeded" else POLL
-    )
+    return json_reply(202 if status == "queued" else 200, body, None if status == "succeeded" else POLL)
 
 
 def test_the_readme_call_end_to_end(api: Wire, storage: Wire, video: Path, tmp_path: Path) -> None:
@@ -67,13 +65,13 @@ def test_the_readme_call_end_to_end(api: Wire, storage: Wire, video: Path, tmp_p
         UPLOAD_ID, f"{storage.url}/bucket/up?X-Amz-Signature=u1", video.stat().st_size
     )
     api.route("POST", "/v1/uploads", json_reply(201, reservation))
-    api.route("POST", "/v1/runs", run_reply("preparing_input"))
+    api.route("POST", "/v1/runs", run_reply("queued"))
     api.route(
         "GET",
         f"/v1/runs/{RUN_ID}",
         run_reply("queued"),
         run_reply("processing_frames"),
-        run_reply("writing_results"),
+        run_reply("processing_frames"),
         json_reply(200, succeeded),
     )
     storage.route("PUT", "/bucket/up", (200, {}, b""))
@@ -91,6 +89,7 @@ def test_the_readme_call_end_to_end(api: Wire, storage: Wire, video: Path, tmp_p
     assert json.loads(api.received("POST", "/v1/runs")[0].body) == {
         "model": "fenon/hand-pose-hm",
         "input": {"video": UPLOAD_ID},
+        "outputs": ["annotations"],
     }
     assert storage.received("PUT", "/bucket/up")[0].body == video.read_bytes()
     assert all(r.headers["authorization"] == f"Bearer {TEMP_KEY}" for r in api.requests)
@@ -125,7 +124,7 @@ def first_cut(request: WireRequest) -> Reply:
 def test_against_a_scripted_stand_in_for_the_first_cut_api(api: Wire, storage: Wire, video: Path) -> None:
     api.route("POST", "/v1/uploads", first_cut)
     with Fenon(api_key=TEMP_KEY, base_url=f"{api.url}/v1") as client, pytest.raises(ServerError) as caught:
-        client.pose.hand(model="fenon/hand-pose-hm", input=video)
+        client.pose.hand(model="fenon/hand-pose-hm", input=video, mode="recorded")
     assert (caught.value.code, caught.value.status_code, caught.value.retryable) == (
         "not_implemented",
         501,
@@ -136,5 +135,5 @@ def test_against_a_scripted_stand_in_for_the_first_cut_api(api: Wire, storage: W
     assert storage.requests == []
 
     with Fenon(api_key="fenon_some_other_key", base_url=f"{api.url}/v1") as client, pytest.raises(AuthError):
-        client.pose.hand(model="fenon/hand-pose-hm", input=video)
+        client.pose.hand(model="fenon/hand-pose-hm", input=video, mode="recorded")
     assert len(api.received("POST", "/v1/uploads")) == 2

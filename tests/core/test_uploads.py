@@ -17,8 +17,8 @@ from fenon._core.http import HttpClients
 from fenon._core.uploads import upload_file
 
 MakeClients = Callable[..., HttpClients]
-SECOND_UPLOAD_ID = "upl_000000second"
-SECOND_URL = "https://storage.example.test/bucket/upl_000000second?X-Amz-Signature=second-signature"
+SECOND_UPLOAD_ID = "upl_000000sec0nd"
+SECOND_URL = "https://storage.example.test/bucket/upl_000000sec0nd?X-Amz-Signature=second-signature"
 
 
 @pytest.fixture
@@ -60,7 +60,7 @@ def test_a_refused_url_gets_one_new_reservation_with_a_new_key(
     storage = Router(
         {
             ("PUT", "/bucket/upl_7k2mq9x4ab3d"): [httpx2.Response(403)],
-            ("PUT", "/bucket/upl_000000second"): [httpx2.Response(200)],
+            ("PUT", "/bucket/upl_000000sec0nd"): [httpx2.Response(200)],
         }
     )
     upload_id = upload_file(make_clients(api=api, storage=storage), video, content_type="video/mp4")
@@ -68,7 +68,7 @@ def test_a_refused_url_gets_one_new_reservation_with_a_new_key(
     keys = [request.headers["idempotency-key"] for request in api.calls("POST", "/v1/uploads")]
     assert len(keys) == 2
     assert keys[0] != keys[1]
-    assert storage.calls("PUT", "/bucket/upl_000000second")[0].content == video.read_bytes()
+    assert storage.calls("PUT", "/bucket/upl_000000sec0nd")[0].content == video.read_bytes()
 
 
 def test_a_second_refusal_is_upload_rejected(make_clients: MakeClients, video: Path) -> None:
@@ -78,7 +78,7 @@ def test_a_second_refusal_is_upload_rejected(make_clients: MakeClients, video: P
     storage = Router(
         {
             ("PUT", "/bucket/upl_7k2mq9x4ab3d"): [httpx2.Response(403)],
-            ("PUT", "/bucket/upl_000000second"): [httpx2.Response(403)],
+            ("PUT", "/bucket/upl_000000sec0nd"): [httpx2.Response(403)],
         }
     )
     with pytest.raises(ServerError) as caught:
@@ -142,7 +142,7 @@ def test_presigned_urls_never_reach_logs_or_errors(
     storage = Router(
         {
             ("PUT", "/bucket/upl_7k2mq9x4ab3d"): [httpx2.Response(503), httpx2.Response(403)],
-            ("PUT", "/bucket/upl_000000second"): [httpx2.Response(403)],
+            ("PUT", "/bucket/upl_000000sec0nd"): [httpx2.Response(403)],
         }
     )
     with pytest.raises(ServerError) as caught:

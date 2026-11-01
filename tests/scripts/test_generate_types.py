@@ -5,9 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from generate_types import CONTRACTS, stale_files
+from generate_types import MODEL_PACKAGES, stale_files
 
-PACKAGE = CONTRACTS[0].package
+PACKAGE = next(iter(MODEL_PACKAGES.values()))
 FILES = [Path("_core/_generated.py"), PACKAGE / "__init__.py", PACKAGE / "row.py"]
 
 

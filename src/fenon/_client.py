@@ -1,19 +1,19 @@
-"""The Fenon client: configuration, logging, the HTTP clients and one attribute per capability."""
+"""The Fenon client: configuration, logging, the HTTP clients and one attribute per capability.
+
+``Fenon()`` reads the ``FENON_*`` settings for any argument left out (docs/features/settings.md).
+``_from_clients`` builds a client around existing HTTP clients; it is the test seam.
+"""
 
 from __future__ import annotations
 
 from types import TracebackType
 from typing import Self
 
-from ._core.http import ClientConfig, HttpClients, open_http_clients
-from ._core.logs import configure_logging
-from ._core.settings import LIMITS, Settings
+from ._core import LIMITS, ClientConfig, HttpClients, Settings, configure_logging, open_http_clients
 from .models.pose import Pose
 
 
 class Fenon:
-    """Client for the Fenon API; reads ``FENON_API_KEY`` when no key is given."""
-
     pose: Pose
 
     def __init__(
@@ -33,7 +33,6 @@ class Fenon:
 
     @classmethod
     def _from_clients(cls, config: ClientConfig, clients: HttpClients) -> Self:
-        """Build a client around existing HTTP clients; the test seam."""
         client = cls.__new__(cls)
         client._attach(config, clients)
         return client
@@ -44,7 +43,6 @@ class Fenon:
         self.pose = Pose(clients)
 
     def close(self) -> None:
-        """Release the connections."""
         self._clients.close()
 
     def __enter__(self) -> Self:

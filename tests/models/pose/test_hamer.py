@@ -48,7 +48,7 @@ def lines(*rows: dict[str, Any] | bytes) -> bytes:
 
 
 def test_the_contract_and_joint_order_come_from_the_generated_types() -> None:
-    assert (CONTRACT.id, CONTRACT.major, list(CONTRACT.shipped)) == ("fenon.hand_pose.video", 1, ["1.0.0"])
+    assert (CONTRACT.id, list(CONTRACT.shipped)) == ("fenon.hand_pose.video", ["1.1.0"])
     assert len(JOINT_ORDER) == 21
     assert (JOINT_ORDER[0], JOINT_ORDER[-1]) == ("wrist", "pinky_tip")
 
@@ -145,7 +145,7 @@ def test_too_few_rows_is_reported_with_both_counts(make_clients: MakeClients) ->
                 "annotations": {
                     "content_type": "text/plain",
                     "url": OUTPUT_URL,
-                    "url_expires_at": "2026-10-26T13:00:00Z",
+                    "url_expires_at": "2026-10-26T13:00:00.000Z",
                     "size_bytes": 10,
                 }
             }

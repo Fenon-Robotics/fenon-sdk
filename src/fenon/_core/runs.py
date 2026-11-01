@@ -1,16 +1,33 @@
-"""Run service: create a run and check its contract, poll it, cancel it, and fetch its outputs."""
+"""Run service: create a run and check its contract, poll it, cancel it, and read or save its outputs.
+
+- A run is read only when its contract version is one the caller ships with a matching hash. A refused run is
+  cancelled (a failed cancel is only logged) and ``unsupported_contract`` or ``contract_mismatch`` is raised.
+- An unknown run status is reported before the rest of the run is validated.
+- Polling follows ``Fenon-Poll-After-Ms`` (clamped to 0.25 to 60 s), else waits 2 s growing x1.5 up to 10 s. A
+  failed poll continues only when its error is retryable, at most eight times in a row. Ctrl-C sends one quick
+  cancel.
+- ``RunOutput`` downloads an output once, or streams it to a temporary file beside the target and replaces the
+  target only when every byte arrived. A refused URL gets one fresh read of the run; a size other than
+  ``size_bytes`` is ``output_truncated``; expired outputs raise ``outputs_expired``. Details:
+  docs/features/uploads-and-runs.md.
+"""
 
 from __future__ import annotations
 
 import abc
-from collections.abc import Mapping, Sequence
+import os
+import tempfile
+import threading
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, ClassVar, Generic, TypeVar
+from pathlib import Path
+from typing import IO, Any, ClassVar, Generic, TypeVar, get_args
 
-from ._generated import ContractRef, OutputFile, Run
+from ._generated import ContractRef, OutputFile, Run, RunStatus
+from .config import LIMITS
 from .errors import (
     FenonError,
-    NetworkError,
+    NotFoundError,
     RunFailedError,
     ServerError,
     StorageUrlRejectedError,
@@ -18,27 +35,18 @@ from .errors import (
 )
 from .http import ApiResponse, HttpClients
 from .logs import logger
-from .settings import LIMITS
 
-RUN_STATUSES = (
-    "preparing_input",
-    "queued",
-    "processing_frames",
-    "writing_results",
-    "succeeded",
-    "failed",
-    "canceled",
-)
+RUN_STATUSES: tuple[str, ...] = get_args(RunStatus.__value__)
 FINAL_STATUSES = frozenset({"succeeded", "failed", "canceled"})
 _MAX_POLL_MS_DIGITS = len(str(int(LIMITS.max_poll_s * 1000)))
 
 ResultT = TypeVar("ResultT")
+TransferT = TypeVar("TransferT")
 
 
 @dataclass(frozen=True)
 class ContractSupport:
     id: str
-    major: int
     shipped: Mapping[str, str]
 
 
@@ -54,10 +62,11 @@ def create_run(
     *,
     model: str,
     run_input: Mapping[str, Any],
+    outputs: Sequence[str],
     supported: Sequence[ContractSupport],
 ) -> RunSnapshot:
-    """Start a run and check that its contract is one the caller can read."""
-    response = clients.api.request("POST", "/runs", json_body={"model": model, "input": dict(run_input)})
+    body = {"model": model, "input": dict(run_input), "outputs": list(outputs)}
+    response = clients.api.request("POST", "/runs", json_body=body)
     snapshot = _snapshot(response)
     refusal = _contract_refusal(snapshot.run, supported, response.request_id)
     if refusal is not None:
@@ -67,39 +76,42 @@ def create_run(
 
 
 def get_run(clients: HttpClients, run_id: str) -> RunSnapshot:
-    """Fetch a run."""
     return _snapshot(clients.api.request("GET", f"/runs/{run_id}"))
 
 
 def cancel_run(
     clients: HttpClients, run_id: str, *, max_retries: int | None = None, timeout_s: float | None = None
 ) -> Run:
-    """Cancel a run; the API returns a run that is already final unchanged."""
     response = clients.api.request(
         "POST", f"/runs/{run_id}/cancel", max_retries=max_retries, timeout_s=timeout_s
     )
     return _snapshot(response).run
 
 
-def fetch_output(clients: HttpClients, run: Run, name: str) -> bytes:
-    """Download one named output of a succeeded run into memory."""
-    content = _download_unless_refused(clients, _output_file(run, name))
-    if content is None:
-        logger.info("run %s output %s refused by storage; fetching a fresh URL", run.id, name)
-        fresh = get_run(clients, run.id).run
-        content = _download_unless_refused(clients, _output_file(fresh, name))
-    if content is None:
-        raise ServerError(
-            "Storage refused the output again after a fresh URL.",
-            code="output_rejected",
-            fix="Try again later.",
-        )
-    return content
+class RunOutput:
+    def __init__(self, clients: HttpClients, run: Run, name: str) -> None:
+        self._clients = clients
+        self._run = run
+        self._name = name
+        self._lock = threading.Lock()
+        self._content: bytes | None = None
+
+    def content(self) -> bytes:
+        with self._lock:
+            if self._content is None:
+                self._content = _fetch_output(self._clients, self._run, self._name)
+            return self._content
+
+    def save(self, path: str | os.PathLike[str]) -> Path:
+        target = Path(path)
+        with self._lock:
+            if self._content is not None:
+                target.write_bytes(self._content)
+                return target
+        return _save_output(self._clients, self._run, self._name, target)
 
 
 class Job(abc.ABC, Generic[ResultT]):
-    """A run being waited on; model packages subclass it, list their contracts and build the result."""
-
     _supported: ClassVar[tuple[ContractSupport, ...]] = ()
 
     def __init__(
@@ -114,23 +126,21 @@ class Job(abc.ABC, Generic[ResultT]):
 
     @property
     def id(self) -> str:
-        """The run ID."""
         return self._run.id
 
     @property
     def status(self) -> str:
-        """The run's status, fetched from the API while the run isn't final."""
         if self._run.status not in FINAL_STATUSES:
             self._update(get_run(self._clients, self._run.id))
         return self._run.status
 
     def result(self) -> ResultT:
-        """Wait for the run to finish and return the model's result."""
         try:
             run = self._wait()
             refusal = _contract_refusal(run, self._supported, self._request_id)
             if refusal is not None:
                 raise refusal
+            _check_requested_outputs(run)
             result = self._make_result(run)
         except KeyboardInterrupt:
             if self._cancel_on_interrupt:
@@ -146,16 +156,13 @@ class Job(abc.ABC, Generic[ResultT]):
         return result
 
     def cancel(self) -> None:
-        """Ask the API to cancel the run; a run that is already final is left unchanged."""
         self._run = cancel_run(self._clients, self._run.id)
         self._poll_after_s = None
 
     @abc.abstractmethod
-    def _make_result(self, run: Run) -> ResultT:
-        """Build the model's result from the succeeded run."""
+    def _make_result(self, run: Run) -> ResultT: ...
 
     def _wait(self) -> Run:
-        """Poll until the run is final; return it when it succeeded."""
         failures = 0
         while self._run.status not in FINAL_STATUSES:
             wait_s = self._next_wait_s()
@@ -176,7 +183,6 @@ class Job(abc.ABC, Generic[ResultT]):
         return self._run
 
     def _next_wait_s(self) -> float:
-        """Return the server's hint, or the next step of the default schedule (2 s, then x1.5, up to 10 s)."""
         if self._poll_after_s is not None:
             return self._poll_after_s
         wait_s = self._default_wait_s
@@ -184,13 +190,11 @@ class Job(abc.ABC, Generic[ResultT]):
         return wait_s
 
     def _update(self, snapshot: RunSnapshot) -> None:
-        """Remember the latest run and poll hint."""
         self._run = snapshot.run
         self._poll_after_s = snapshot.poll_after_s
         self._request_id = snapshot.request_id
 
     def _cancel_after_interrupt(self) -> None:
-        """Send one quick cancel for a run that isn't known to be final; a failure is only logged."""
         if self._run.status in FINAL_STATUSES:
             return
         try:
@@ -204,7 +208,6 @@ class Job(abc.ABC, Generic[ResultT]):
 
 
 def _snapshot(response: ApiResponse) -> RunSnapshot:
-    """Read a run response, detecting an unknown status before validating the rest."""
     status = response.body.get("status")
     if isinstance(status, str) and status not in RUN_STATUSES:
         raise ServerError(
@@ -221,7 +224,6 @@ def _snapshot(response: ApiResponse) -> RunSnapshot:
 
 
 def _poll_after_s(value: str | None) -> float | None:
-    """Return ``Fenon-Poll-After-Ms`` in seconds, clamped to 0.25 to 60 s; ``None`` when absent or invalid."""
     if value is None or not (value.isascii() and value.isdigit()):
         return None
     digits = value.lstrip("0") or "0"
@@ -233,14 +235,12 @@ def _poll_after_s(value: str | None) -> float | None:
 def _contract_refusal(
     run: Run, supported: Sequence[ContractSupport], request_id: str | None
 ) -> FenonError | None:
-    """Return the error for a run whose contract the caller can't read, or ``None`` when it can."""
     contract: ContractRef = run.contract
     details = {"run_id": run.id, "contract_id": contract.id, "contract_version": contract.version}
-    major = contract.version.split(".", 1)[0].lstrip("0") or "0"
     for support in supported:
-        if support.id == contract.id and str(support.major) == major:
-            shipped_sha256 = support.shipped.get(contract.version)
-            if shipped_sha256 is None or shipped_sha256 == contract.schema_sha256:
+        shipped_sha256 = support.shipped.get(contract.version) if support.id == contract.id else None
+        if shipped_sha256 is not None:
+            if shipped_sha256 == contract.schema_sha256:
                 return None
             return ServerError(
                 f"The API's contract {contract.id} {contract.version} doesn't match the copy shipped with "
@@ -261,7 +261,6 @@ def _contract_refusal(
 
 
 def _cancel_refused_run(clients: HttpClients, run_id: str) -> None:
-    """Cancel a run the SDK refuses to read; a failure is only logged, since the refusal is raised anyway."""
     try:
         cancel_run(clients, run_id)
     except FenonError:
@@ -271,17 +270,30 @@ def _cancel_refused_run(clients: HttpClients, run_id: str) -> None:
 
 
 def _poll_may_continue(error: FenonError) -> bool:
-    """Return whether a failed poll counts toward the limit instead of ending the wait at once."""
-    if error.retry_after_s is not None and error.retry_after_s > LIMITS.max_retry_hint_s:
-        return False
-    if isinstance(error, NetworkError):
-        return True
-    status = error.status_code
-    return status is not None and (status in (408, 429) or (500 <= status < 600 and status != 501))
+    hint_too_long = error.retry_after_s is not None and error.retry_after_s > LIMITS.max_retry_hint_s
+    return error.retryable and not hint_too_long
+
+
+def _fetch_output(clients: HttpClients, run: Run, name: str) -> bytes:
+    return _with_fresh_url(clients, run, name, lambda output: _download_unless_refused(clients, output))
+
+
+def _save_output(clients: HttpClients, run: Run, name: str, path: Path) -> Path:
+    with tempfile.NamedTemporaryFile(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".part", delete=False
+    ) as part:
+        part_path = Path(part.name)
+        try:
+            _with_fresh_url(clients, run, name, lambda output: _stream_unless_refused(clients, output, part))
+        except BaseException:
+            part.close()
+            part_path.unlink(missing_ok=True)
+            raise
+    os.replace(part_path, path)
+    return path
 
 
 def _run_failed_error(run: Run) -> RunFailedError:
-    """Return the error for a run that ended ``failed`` or ``canceled``."""
     failure = run.error
     if failure is None:
         return RunFailedError(f"The run ended {run.status}.", run_id=run.id, code=run.status)
@@ -289,16 +301,49 @@ def _run_failed_error(run: Run) -> RunFailedError:
         failure.message,
         run_id=run.id,
         stage=failure.stage,
-        frame=failure.frame,
-        timestamp_s=failure.timestamp_s,
         code=failure.code,
         fix=failure.fix,
         details=failure.details,
     )
 
 
+def _check_requested_outputs(run: Run) -> None:
+    if run.outputs_expired:
+        return
+    present = set(run.outputs or {})
+    if not set(run.outputs_requested) <= present:
+        raise ServerError(
+            "The run succeeded without every output it asked for.",
+            code="invalid_response",
+            fix="Report it with the run ID.",
+            details={"run_id": run.id},
+        )
+
+
+def _with_fresh_url(
+    clients: HttpClients, run: Run, name: str, transfer: Callable[[OutputFile], TransferT | None]
+) -> TransferT:
+    done = transfer(_output_file(run, name))
+    if done is None:
+        logger.info("run %s output %s refused by storage; fetching a fresh URL", run.id, name)
+        done = transfer(_output_file(get_run(clients, run.id).run, name))
+    if done is None:
+        raise ServerError(
+            "Storage refused the output again after a fresh URL.",
+            code="output_rejected",
+            fix="Try again later.",
+        )
+    return done
+
+
 def _output_file(run: Run, name: str) -> OutputFile:
-    """Return a succeeded run's named output."""
+    if run.outputs_expired:
+        raise NotFoundError(
+            "This run's outputs have expired and were deleted.",
+            code="outputs_expired",
+            fix="Run the video again, and save its outputs before outputs_expire_at.",
+            details={"run_id": run.id, "outputs_expire_at": run.outputs_expire_at},
+        )
     outputs = run.outputs if run.status == "succeeded" else None
     if outputs is None or name not in outputs:
         raise ServerError(f"The run has no {name} output.", code="invalid_response")
@@ -306,16 +351,28 @@ def _output_file(run: Run, name: str) -> OutputFile:
 
 
 def _download_unless_refused(clients: HttpClients, output: OutputFile) -> bytes | None:
-    """Download an output; ``None`` when storage refuses its URL."""
     try:
         content = clients.storage.download(output.url)
     except StorageUrlRejectedError:
         return None
-    if len(content) != output.size_bytes:
+    _check_size(output, len(content))
+    return content
+
+
+def _stream_unless_refused(clients: HttpClients, output: OutputFile, destination: IO[bytes]) -> int | None:
+    try:
+        written = clients.storage.download_to(output.url, destination)
+    except StorageUrlRejectedError:
+        return None
+    _check_size(output, written)
+    return written
+
+
+def _check_size(output: OutputFile, received_bytes: int) -> None:
+    if received_bytes != output.size_bytes:
         raise ServerError(
             "The output's size doesn't match what the API reported.",
             code="output_truncated",
             fix="Try again; if it persists, report it with the run ID.",
-            details={"expected_bytes": output.size_bytes, "received_bytes": len(content)},
+            details={"expected_bytes": output.size_bytes, "received_bytes": received_bytes},
         )
-    return content

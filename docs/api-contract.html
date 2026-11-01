@@ -128,6 +128,7 @@ footer { border-top: 1px solid var(--stone-200); margin-top: 64px; padding-top: 
   <p class="eyebrow">Fenon API · v1</p>
   <h1>API contract</h1>
   <p class="lede">What developers write with the Fenon SDK, the API it talks to, and what each model takes and returns. How models are executed is handled separately; Part 3 lists what the runner must produce.</p>
+  <p><strong>Status (2026-11-01):</strong> the API supports live sessions only (<code>mode="live"</code>; see <code>docs/features/live.md</code> and fenon-api's contract in <code>docs/contracts/fenon-api/</code>). Recorded mode, the uploads, runs and outputs described below, is coming soon; this document is its plan, not the running API.</p>
   <div class="badges">
     <span class="badge draft">Draft for sign-off</span>
     <span class="badge">26 Oct 2026</span>
@@ -164,11 +165,9 @@ job.status        <span class="c"># "preparing_input" → "queued" → "processi
 result = job.result()
 job.cancel()</code></pre>
 
-<h3>Live models (later)</h3>
-<pre><code>with client.&lt;capability&gt;.connect(model="nvidia/groot-n1.7") as session:
-    step = session.step(observation)
-    step.action</code></pre>
-<p>Live work uses an explicit session (as OpenAI, Dreamscale and Dream Labs do). Names are set when the first live model is added.</p>
+<h3>Live mode (video)</h3>
+<pre><code>result = client.pose.hand(model="fenon/hand-pose-hm", input="clip.mp4", mode="live")</code></pre>
+<p>Streams the video over WebRTC through a live session and returns its results. It follows fenon-api's own contract (pinned in <code>docs/contracts/fenon-api/</code>), not this document's shared API; see <code>docs/features/live.md</code>. Interactive sessions for robot policies (observations in, actions out) remain later work and will get their own design.</p>
 
 <h2 id="sdk-surface">Public surface</h2>
 <div class="wrap"><table>
@@ -446,7 +445,7 @@ job.cancel()</code></pre>
 <thead><tr><th>Mode</th><th>Protocol</th><th>Status</th></tr></thead>
 <tbody>
 <tr><td><code>recorded</code></td><td>Runs on uploaded files, as above</td><td>v1</td></tr>
-<tr><td><code>live</code></td><td>Sessions: open, send observations with sequence numbers, receive results, reset episode, close</td><td>Deferred (decision 2026-10-26); defined once for all live models</td></tr>
+<tr><td><code>live</code></td><td>Video: <code>mode="live"</code> on fenon-api's live-session contract (built 2026-11-01, <code>docs/features/live.md</code>). Robot-policy sessions (observations with sequence numbers, episode reset)</td><td>Video built; robot-policy sessions deferred</td></tr>
 </tbody></table></div>
 
 <h2 id="storage">Data the service keeps</h2>
@@ -546,7 +545,7 @@ v = focal_length_px · y / z + height / 2</code></pre>
 <tr><td>Final limits (types, size, duration, <code>max_run_s</code>)</td><td>Values shown are proposals from the Playground design</td></tr>
 <tr><td>Retention and deletion policy</td><td>Required before production</td></tr>
 <tr><td>Base URL, model version format</td><td>Proposed / placeholder</td></tr>
-<tr><td>Live mode protocol</td><td>Deferred</td></tr>
+<tr><td>Live mode protocol</td><td>Video: fenon-api's live-session contract, pinned in <code>docs/contracts/fenon-api/</code>. Robot-policy sessions: deferred</td></tr>
 <tr><td>What Ctrl-C does during a blocking SDK call</td><td>Decided: one best-effort cancel, then re-raise (SDK Behaviour, Ctrl-C)</td></tr>
 </tbody></table></div>
 

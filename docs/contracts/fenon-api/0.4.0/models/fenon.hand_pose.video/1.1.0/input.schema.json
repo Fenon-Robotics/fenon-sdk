@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://api.fenon.ai/contracts/models/fenon.hand_pose.video/1.1.0/input.schema.json",
+  "title": "HandPoseInput",
+  "description": "Input of contract fenon.hand_pose.video 1.1.0.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "video"
+  ],
+  "properties": {
+    "video": {
+      "type": "string",
+      "pattern": "^upl_[0-9a-hjkmnp-tv-z]{12}$",
+      "description": "Upload ID of the video, from POST /v1/uploads, in the same project."
+    },
+    "range": {
+      "title": "HandPoseRange",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start_s",
+        "end_s"
+      ],
+      "description": "Seconds of the video to process. Frames with start_s <= frame_index / fps < end_s are processed. end_s must be greater than start_s, and end_s beyond the video is clipped to its end (both checked by the service). Omitted: the whole video. Not processed yet: a run that sends a range is refused with 422 input_invalid until the model engine supports ranges.",
+      "properties": {
+        "start_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "end_s": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
+    }
+  }
+}

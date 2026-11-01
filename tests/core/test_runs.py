@@ -6,6 +6,7 @@ import json
 import logging
 import threading
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import httpx2
@@ -37,15 +38,15 @@ from fenon._core.http import HttpClients
 from fenon._core.runs import (
     ContractSupport,
     Job,
+    RunOutput,
     RunSnapshot,
     cancel_run,
     create_run,
-    fetch_output,
     get_run,
 )
 
 MakeClients = Callable[..., HttpClients]
-SUPPORT = ContractSupport(CONTRACT_ID, 1, {"1.0.0": CONTRACT_SHA256})
+SUPPORT = ContractSupport(CONTRACT_ID, {"1.0.0": CONTRACT_SHA256})
 RUN_PATH = f"/v1/runs/{RUN_ID}"
 CANCEL_PATH = f"/v1/runs/{RUN_ID}/cancel"
 OUTPUT_PATH = "/out/annotations.jsonl"
@@ -53,17 +54,13 @@ FRESH_URL = "https://storage.example.test/fresh/annotations.jsonl?X-Amz-Signatur
 
 
 class SampleJob(Job[str]):
-    """A minimal job whose result names the final run."""
-
     _supported = (SUPPORT,)
 
     def _make_result(self, run: Run) -> str:
         return f"{run.id}:{run.status}"
 
 
-def snapshot(
-    status: str = "preparing_input", poll_after_s: float | None = None, **fields: Any
-) -> RunSnapshot:
+def snapshot(status: str = "queued", poll_after_s: float | None = None, **fields: Any) -> RunSnapshot:
     return RunSnapshot(Run.model_validate(run_body(status, **fields)), poll_after_s)
 
 
@@ -74,21 +71,25 @@ def contract(
 
 
 class TestCreateRun:
-    def test_sends_exactly_model_and_input_and_reads_the_poll_hint(self, make_clients: MakeClients) -> None:
-        api = Router({("POST", "/v1/runs"): [run_response("preparing_input", poll_after_ms=1500)]})
+    def test_sends_exactly_model_input_and_outputs_and_reads_the_poll_hint(
+        self, make_clients: MakeClients
+    ) -> None:
+        api = Router({("POST", "/v1/runs"): [run_response("queued", poll_after_ms=1500)]})
         created = create_run(
             make_clients(api=api),
             model="fenon/test-model",
             run_input={"video": "upl_7k2mq9x4ab3d"},
+            outputs=("annotations", "video"),
             supported=[SUPPORT],
         )
         request = api.calls("POST", "/v1/runs")[0]
         assert json.loads(request.content) == {
             "model": "fenon/test-model",
             "input": {"video": "upl_7k2mq9x4ab3d"},
+            "outputs": ["annotations", "video"],
         }
         assert request.headers["idempotency-key"]
-        assert (created.run.id, created.run.status, created.poll_after_s) == (RUN_ID, "preparing_input", 1.5)
+        assert (created.run.id, created.run.status, created.poll_after_s) == (RUN_ID, "queued", 1.5)
 
     @pytest.mark.parametrize(
         ("header", "expected"),
@@ -112,7 +113,9 @@ class TestCreateRun:
     ) -> None:
         headers = [] if header is None else [(b"Fenon-Poll-After-Ms", header.encode("latin-1"))]
         api = Router({("POST", "/v1/runs"): [httpx2.Response(202, json=run_body(), headers=headers)]})
-        created = create_run(make_clients(api=api), model="m", run_input={}, supported=[SUPPORT])
+        created = create_run(
+            make_clients(api=api), model="m", run_input={}, outputs=["annotations"], supported=[SUPPORT]
+        )
         assert created.poll_after_s == expected
 
     @pytest.mark.parametrize(
@@ -129,7 +132,9 @@ class TestCreateRun:
             }
         )
         with pytest.raises(UnsupportedModelError) as caught:
-            create_run(make_clients(api=api), model="m", run_input={}, supported=[SUPPORT])
+            create_run(
+                make_clients(api=api), model="m", run_input={}, outputs=["annotations"], supported=[SUPPORT]
+            )
         assert caught.value.code == "unsupported_contract"
         assert caught.value.details == {
             "run_id": RUN_ID,
@@ -148,17 +153,37 @@ class TestCreateRun:
             }
         )
         with pytest.raises(ServerError) as caught:
-            create_run(make_clients(api=api), model="m", run_input={}, supported=[SUPPORT])
+            create_run(
+                make_clients(api=api), model="m", run_input={}, outputs=["annotations"], supported=[SUPPORT]
+            )
         assert caught.value.code == "contract_mismatch"
         assert len(api.calls("POST", CANCEL_PATH)) == 1
 
-    @pytest.mark.parametrize("version", ["1.1.0", "1.0.1", "1.7.3"])
-    def test_other_versions_of_a_supported_major_are_accepted(
+    @pytest.mark.parametrize("version", ["1.1.0", "1.0.1", "1.7.3", "001.0.0"])
+    def test_versions_the_sdk_doesnt_ship_are_refused_even_in_a_known_major(
         self, make_clients: MakeClients, version: str
     ) -> None:
-        api = Router({("POST", "/v1/runs"): [run_response(contract=contract(version=version, sha="c" * 64))]})
-        created = create_run(make_clients(api=api), model="m", run_input={}, supported=[SUPPORT])
-        assert created.run.contract.version == version
+        reported = contract(version=version, sha="c" * 64)
+        api = Router(
+            {
+                ("POST", "/v1/runs"): [run_response(contract=reported)],
+                ("POST", CANCEL_PATH): [run_response("canceled", contract=reported)],
+            }
+        )
+        with pytest.raises(UnsupportedModelError) as caught:
+            create_run(
+                make_clients(api=api), model="m", run_input={}, outputs=["annotations"], supported=[SUPPORT]
+            )
+        assert caught.value.code == "unsupported_contract"
+        assert len(api.calls("POST", CANCEL_PATH)) == 1
+
+    def test_every_shipped_version_is_accepted(self, make_clients: MakeClients) -> None:
+        both = ContractSupport(CONTRACT_ID, {"1.0.0": CONTRACT_SHA256, "1.1.0": "c" * 64})
+        api = Router({("POST", "/v1/runs"): [run_response(contract=contract(version="1.1.0", sha="c" * 64))]})
+        created = create_run(
+            make_clients(api=api), model="m", run_input={}, outputs=["annotations"], supported=[both]
+        )
+        assert created.run.contract.version == "1.1.0"
         assert api.calls("POST", CANCEL_PATH) == []
 
     def test_a_failed_cancel_doesnt_hide_the_refusal(
@@ -172,7 +197,13 @@ class TestCreateRun:
             }
         )
         with pytest.raises(UnsupportedModelError):
-            create_run(make_clients(api=api, max_retries=0), model="m", run_input={}, supported=[SUPPORT])
+            create_run(
+                make_clients(api=api, max_retries=0),
+                model="m",
+                run_input={},
+                outputs=["annotations"],
+                supported=[SUPPORT],
+            )
         assert f"run {RUN_ID}: cancel of a refused run failed" in caplog.text
 
     def test_an_unusable_major_version_is_refused_and_cancelled(self, make_clients: MakeClients) -> None:
@@ -184,15 +215,10 @@ class TestCreateRun:
             }
         )
         with pytest.raises(UnsupportedModelError):
-            create_run(make_clients(api=api), model="m", run_input={}, supported=[SUPPORT])
+            create_run(
+                make_clients(api=api), model="m", run_input={}, outputs=["annotations"], supported=[SUPPORT]
+            )
         assert len(api.calls("POST", CANCEL_PATH)) == 1
-
-    def test_a_major_with_leading_zeros_is_the_same_major(self, make_clients: MakeClients) -> None:
-        api = Router(
-            {("POST", "/v1/runs"): [run_response(contract=contract(version="001.2.0", sha="d" * 64))]}
-        )
-        created = create_run(make_clients(api=api), model="m", run_input={}, supported=[SUPPORT])
-        assert created.run.contract.version == "001.2.0"
 
     def test_cancel_failures_never_log_api_text(
         self, make_clients: MakeClients, fake_runtime: FakeRuntime, caplog: pytest.LogCaptureFixture
@@ -206,7 +232,13 @@ class TestCreateRun:
             }
         )
         with pytest.raises(UnsupportedModelError):
-            create_run(make_clients(api=api, max_retries=0), model="m", run_input={}, supported=[SUPPORT])
+            create_run(
+                make_clients(api=api, max_retries=0),
+                model="m",
+                run_input={},
+                outputs=["annotations"],
+                supported=[SUPPORT],
+            )
         fake_runtime.interrupt_at_sleep = 1
         with pytest.raises(KeyboardInterrupt):
             SampleJob(make_clients(api=api, max_retries=0), snapshot(), cancel_on_interrupt=True).result()
@@ -223,7 +255,9 @@ class TestCreateRun:
                 ]
             }
         )
-        create_run(make_clients(api=api), model="m", run_input={}, supported=[SUPPORT])
+        create_run(
+            make_clients(api=api), model="m", run_input={}, outputs=["annotations"], supported=[SUPPORT]
+        )
         keys = {r.headers["idempotency-key"] for r in api.calls("POST", "/v1/runs")}
         assert len(api.calls("POST", "/v1/runs")) == 2
         assert len(keys) == 1
@@ -269,7 +303,7 @@ class TestPolling:
                 ("GET", RUN_PATH): [
                     run_response("queued", poll_after_ms=1000),
                     run_response("processing_frames", poll_after_ms=500),
-                    run_response("writing_results"),
+                    run_response("processing_frames"),
                     run_response("succeeded"),
                 ]
             }
@@ -336,21 +370,29 @@ class TestPolling:
         assert caught.value.job is job
         assert len(api.calls("GET", RUN_PATH)) == 1
 
+    @pytest.mark.parametrize("retryable", [True, False])
+    def test_a_failed_poll_continues_only_when_the_error_is_retryable(
+        self, make_clients: MakeClients, retryable: bool
+    ) -> None:
+        failure = error_response(503, "unavailable", retryable=retryable)
+        api = Router({("GET", RUN_PATH): [failure, run_response("succeeded")]})
+        job = SampleJob(make_clients(api=api, max_retries=0), snapshot())
+        if retryable:
+            assert job.result() == f"{RUN_ID}:succeeded"
+        else:
+            with pytest.raises(ServerError):
+                job.result()
+        assert len(api.calls("GET", RUN_PATH)) == (2 if retryable else 1)
+
     def test_failed_run_raises_with_every_field(self, make_clients: MakeClients) -> None:
         api = Router({("GET", RUN_PATH): [run_response("failed")]})
         job = SampleJob(make_clients(api=api), snapshot())
         with pytest.raises(RunFailedError) as caught:
             job.result()
         error = caught.value
-        assert (error.run_id, error.code, error.stage, error.frame, error.timestamp_s) == (
-            RUN_ID,
-            "variable_frame_rate",
-            "preparing_input",
-            141,
-            4.7,
-        )
-        assert error.message == "The frame rate changes partway through this file."
-        assert error.fix == "Export it again at a constant frame rate."
+        assert (error.run_id, error.code, error.stage) == (RUN_ID, "input_unreadable", "processing_frames")
+        assert error.message == "The model engine couldn't read the video."
+        assert error.fix == "Check that the file plays, then upload it again."
         assert error.job is job
 
     def test_canceled_run_raises_run_failed(self, make_clients: MakeClients) -> None:
@@ -401,11 +443,11 @@ class TestJob:
         assert request.extensions["timeout"] == {"connect": 5.0, "read": 5.0, "write": 5.0, "pool": 5.0}
 
 
-class TestFetchOutput:
+class TestRunOutputDownload:
     def test_returns_the_bytes_without_fenon_headers(self, make_clients: MakeClients) -> None:
         storage = Router({("GET", OUTPUT_PATH): [httpx2.Response(200, content=OUTPUT_BYTES)]})
         run = snapshot("succeeded").run
-        assert fetch_output(make_clients(storage=storage), run, "annotations") == OUTPUT_BYTES
+        assert RunOutput(make_clients(storage=storage), run, "annotations").content() == OUTPUT_BYTES
         assert "authorization" not in storage.requests[0].headers
 
     def test_a_refused_url_is_refreshed_once(self, make_clients: MakeClients) -> None:
@@ -418,9 +460,9 @@ class TestFetchOutput:
                 ("GET", "/fresh/annotations.jsonl"): [httpx2.Response(200, content=OUTPUT_BYTES)],
             }
         )
-        content = fetch_output(
+        content = RunOutput(
             make_clients(api=api, storage=storage), snapshot("succeeded").run, "annotations"
-        )
+        ).content()
         assert content == OUTPUT_BYTES
         assert len(api.calls("GET", RUN_PATH)) == 1
 
@@ -428,7 +470,9 @@ class TestFetchOutput:
         api = Router({("GET", RUN_PATH): [run_response("succeeded")]})
         storage = Router({("GET", OUTPUT_PATH): [httpx2.Response(403)]})
         with pytest.raises(ServerError) as caught:
-            fetch_output(make_clients(api=api, storage=storage), snapshot("succeeded").run, "annotations")
+            RunOutput(
+                make_clients(api=api, storage=storage), snapshot("succeeded").run, "annotations"
+            ).content()
         assert caught.value.code == "output_rejected"
         assert caught.value.__context__ is None
         assert len(storage.requests) == 2
@@ -437,7 +481,7 @@ class TestFetchOutput:
     def test_a_size_mismatch_is_output_truncated(self, make_clients: MakeClients, content: bytes) -> None:
         storage = Router({("GET", OUTPUT_PATH): [httpx2.Response(200, content=content)]})
         with pytest.raises(ServerError) as caught:
-            fetch_output(make_clients(storage=storage), snapshot("succeeded").run, "annotations")
+            RunOutput(make_clients(storage=storage), snapshot("succeeded").run, "annotations").content()
         assert caught.value.code == "output_truncated"
         assert caught.value.details == {"expected_bytes": len(OUTPUT_BYTES), "received_bytes": len(content)}
 
@@ -446,7 +490,7 @@ class TestFetchOutput:
         self, make_clients: MakeClients, status: str, name: str
     ) -> None:
         with pytest.raises(ServerError) as caught:
-            fetch_output(make_clients(), snapshot(status).run, name)
+            RunOutput(make_clients(), snapshot(status).run, name).content()
         assert caught.value.code == "invalid_response"
 
     def test_output_urls_never_reach_logs_or_errors(
@@ -456,11 +500,73 @@ class TestFetchOutput:
         api = Router({("GET", RUN_PATH): [run_response("succeeded")]})
         storage = Router({("GET", OUTPUT_PATH): [httpx2.Response(503), httpx2.Response(403)]})
         with pytest.raises(ServerError) as caught:
-            fetch_output(make_clients(api=api, storage=storage), snapshot("succeeded").run, "annotations")
+            RunOutput(
+                make_clients(api=api, storage=storage), snapshot("succeeded").run, "annotations"
+            ).content()
         text = "\n".join([caplog.text, str(caught.value), repr(caught.value)])
         assert caplog.records
         assert "output-signature" not in text
         assert "storage.example.test" not in text
+
+
+class TestRunOutput:
+    def test_downloads_once_however_often(self, make_clients: MakeClients) -> None:
+        storage = Router({("GET", OUTPUT_PATH): [httpx2.Response(200, content=OUTPUT_BYTES)]})
+        output = RunOutput(
+            make_clients(storage=storage), Run.model_validate(run_body("succeeded")), "annotations"
+        )
+        assert [output.content() for _ in range(3)] == [OUTPUT_BYTES] * 3
+        assert len(storage.requests) == 1
+
+    def test_a_second_thread_waits_for_the_first_download(self, make_clients: MakeClients) -> None:
+        entered = threading.Semaphore(0)
+        release = threading.Event()
+        router = Router({("GET", OUTPUT_PATH): [httpx2.Response(200, content=OUTPUT_BYTES)]})
+
+        def slow(request: httpx2.Request) -> httpx2.Response:
+            entered.release()
+            release.wait(5)
+            return router(request)
+
+        output = RunOutput(
+            make_clients(storage=slow), Run.model_validate(run_body("succeeded")), "annotations"
+        )
+        results: list[bytes] = []
+        first = threading.Thread(target=lambda: results.append(output.content()))
+        first.start()
+        assert entered.acquire(timeout=5)
+        others = [threading.Thread(target=lambda: results.append(output.content())) for _ in range(3)]
+        for thread in others:
+            thread.start()
+        second_download_started = entered.acquire(timeout=0.5)
+        release.set()
+        for thread in [first, *others]:
+            thread.join()
+        assert not second_download_started
+        assert results == [OUTPUT_BYTES] * 4
+        assert len(router.requests) == 1
+
+    def test_save_writes_the_exact_bytes_and_returns_the_path(
+        self, make_clients: MakeClients, tmp_path: Path
+    ) -> None:
+        storage = Router({("GET", OUTPUT_PATH): [httpx2.Response(200, content=OUTPUT_BYTES)]})
+        output = RunOutput(
+            make_clients(storage=storage), Run.model_validate(run_body("succeeded")), "annotations"
+        )
+        target = tmp_path / "frames.jsonl"
+        target.write_bytes(b"old content that is longer than the output")
+        assert output.save(str(target)) == target
+        assert target.read_bytes() == OUTPUT_BYTES
+
+    def test_save_into_a_missing_folder_raises_the_os_error(
+        self, make_clients: MakeClients, tmp_path: Path
+    ) -> None:
+        storage = Router({("GET", OUTPUT_PATH): [httpx2.Response(200, content=OUTPUT_BYTES)]})
+        output = RunOutput(
+            make_clients(storage=storage), Run.model_validate(run_body("succeeded")), "annotations"
+        )
+        with pytest.raises(FileNotFoundError):
+            output.save(tmp_path / "missing" / "frames.jsonl")
 
 
 class TestCtrlC:
@@ -561,7 +667,7 @@ def test_four_threads_share_nothing_they_shouldnt(make_clients: MakeClients) -> 
     lock = threading.Lock()
 
     def work() -> None:
-        created = create_run(clients, model="m", run_input={}, supported=[SUPPORT])
+        created = create_run(clients, model="m", run_input={}, outputs=["annotations"], supported=[SUPPORT])
         outcome = SampleJob(clients, created).result()
         with lock:
             results.append(outcome)

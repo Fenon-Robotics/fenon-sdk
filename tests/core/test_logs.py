@@ -90,7 +90,7 @@ def test_no_secret_reaches_logs_errors_or_reprs(
 
 
 def test_reprs_never_show_bodies_or_presigned_urls() -> None:
-    file = {"url": SECRET_URL, "url_expires_at": "2026-10-26T12:15:00Z", "size_bytes": 10}
+    file = {"url": SECRET_URL, "url_expires_at": "2026-10-26T12:15:00.000Z", "size_bytes": 10}
     objects = [
         ApiResponse(200, {"upload_url": SECRET_URL}, "req_x", {"x-signed": SECRET_URL}),
         UploadReservation.model_validate(
@@ -100,7 +100,7 @@ def test_reprs_never_show_bodies_or_presigned_urls() -> None:
                 "upload_url": SECRET_URL,
                 "method": "PUT",
                 "headers": {"Content-Type": "video/mp4"},
-                "expires_at": "2026-10-26T12:15:00Z",
+                "expires_at": "2026-10-26T12:15:00.000Z",
             }
         ),
         OutputFile.model_validate({**file, "content_type": "application/x-ndjson"}),

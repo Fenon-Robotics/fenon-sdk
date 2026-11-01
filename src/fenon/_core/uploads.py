@@ -1,14 +1,22 @@
-"""Upload service: measure a local file, reserve an upload, send the bytes, and renew the reservation once."""
+"""Upload service: measure a local file, reserve an upload, send the bytes, and renew the reservation once.
+
+``VIDEO_CONTENT_TYPES`` maps a file extension to the content types fenon-api's upload contract accepts
+(docs/features/uploads-and-runs.md).
+"""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
+from types import MappingProxyType
 
 from ._generated import UploadReservation
+from .config import LIMITS
 from .errors import ServerError, StorageUrlRejectedError
 from .http import HttpClients, measure_upload_file
 from .logs import logger
-from .settings import LIMITS
+
+VIDEO_CONTENT_TYPES: Mapping[str, str] = MappingProxyType({".mp4": "video/mp4", ".mov": "video/quicktime"})
 
 
 def upload_file(clients: HttpClients, path: Path, *, content_type: str) -> str:

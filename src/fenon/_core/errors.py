@@ -1,4 +1,9 @@
-"""Errors raised by the Fenon SDK, and how Fenon API error responses map onto them."""
+"""Errors raised by the Fenon SDK, and how Fenon API error responses map onto them (docs/features/errors.md).
+
+``error_from_response`` picks the class from the envelope's ``code`` first (``active_session_limit``), then
+from the status. The body's boolean ``retryable`` wins; the caller's status rule applies only when the body
+has none.
+"""
 
 from __future__ import annotations
 
@@ -45,31 +50,31 @@ class FenonError(Exception):
 
 
 class AuthError(FenonError):
-    """The API key is missing, invalid, or not allowed to do this."""
+    pass
 
 
 class CreditsError(FenonError):
-    """The workspace is out of credits."""
+    pass
 
 
 class InvalidInputError(FenonError, ValueError):
-    """The request or its input was rejected, by the SDK before sending or by the API."""
+    pass
 
 
 class NotFoundError(FenonError):
-    """The model, upload or run doesn't exist, or isn't visible to this API key."""
+    pass
 
 
 class RateLimitError(FenonError):
-    """The API is still rate-limiting this key after the SDK's retries."""
+    pass
 
 
 class ServerError(FenonError):
-    """The API or storage failed, isn't available yet, or answered in a way the SDK can't use."""
+    pass
 
 
 class NetworkError(FenonError, ConnectionError):
-    """The SDK couldn't reach the API or storage, or the connection timed out, after its retries."""
+    pass
 
 
 class RunFailedError(FenonError):
@@ -79,8 +84,6 @@ class RunFailedError(FenonError):
         *,
         run_id: str,
         stage: str | None = None,
-        frame: int | None = None,
-        timestamp_s: float | None = None,
         code: str | None = None,
         fix: str | None = None,
         details: Mapping[str, Any] | None = None,
@@ -89,20 +92,28 @@ class RunFailedError(FenonError):
         super().__init__(message, code=code, fix=fix, details=details, request_id=request_id)
         self.run_id = run_id
         self.stage = stage
-        self.frame = frame
-        self.timestamp_s = timestamp_s
 
 
 class UnsupportedModelError(FenonError):
-    """The model uses a contract this version of the SDK doesn't support."""
+    pass
 
 
 class StorageUrlRejectedError(ServerError):
-    """Storage refused a presigned URL (expired or forbidden); the caller may request a fresh one."""
+    pass
+
+
+class SessionLimitError(FenonError):
+    pass
+
+
+class LiveSessionError(FenonError):
+    result: object = None
+
+
+_ERROR_CLASS_FOR_CODE: dict[str, type[FenonError]] = {"active_session_limit": SessionLimitError}
 
 
 def error_class_for_status(status_code: int) -> type[FenonError]:
-    """Return the error class the contract assigns to an HTTP status."""
     if status_code in (400, 413, 415, 422):
         return InvalidInputError
     if status_code in (401, 403):
@@ -125,34 +136,30 @@ def error_from_response(
     payload: object,
     *,
     request_id: str | None,
-    retryable: bool,
     retry_after_s: float | None,
+    retryable_without_error_body: bool,
 ) -> FenonError:
     envelope = _envelope(payload)
+    code = _text(envelope.get("code"))
+    error_class = _ERROR_CLASS_FOR_CODE.get(code or "") or error_class_for_status(status_code)
     message = _text(envelope.get("message")) or f"The Fenon API answered with HTTP {status_code}."
     body_request_id = _text(envelope.get("request_id"))
     body_retryable = envelope.get("retryable")
     details = envelope.get("details")
     detail_map = cast("dict[str, Any]", details) if isinstance(details, dict) else None
-    return error_class_for_status(status_code)(
+    return error_class(
         message,
-        code=_text(envelope.get("code")),
+        code=code,
         fix=_text(envelope.get("fix")),
         details=detail_map,
         request_id=request_id or body_request_id,
         status_code=status_code,
-        retryable=body_retryable if isinstance(body_retryable, bool) else retryable,
+        retryable=body_retryable if isinstance(body_retryable, bool) else retryable_without_error_body,
         retry_after_s=retry_after_s,
     )
 
 
-def error_code_of(payload: object) -> str | None:
-    """Return the ``error.code`` of a decoded error body, or ``None`` when it has none."""
-    return _text(_envelope(payload).get("code"))
-
-
 def retry_after_of(payload: object) -> float | None:
-    """Return the ``error.retry_after_s`` of a decoded error body when it is a finite number of 0 or more."""
     value = _envelope(payload).get("retry_after_s")
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
@@ -161,7 +168,6 @@ def retry_after_of(payload: object) -> float | None:
 
 
 def _envelope(payload: object) -> dict[str, Any]:
-    """Return the ``error`` object of a decoded body, or an empty dict."""
     if isinstance(payload, dict):
         error = cast("dict[str, Any]", payload).get("error")
         if isinstance(error, dict):
@@ -170,5 +176,4 @@ def _envelope(payload: object) -> dict[str, Any]:
 
 
 def _text(value: object) -> str | None:
-    """Return ``value`` if it is a non-empty string, else ``None``."""
     return value if isinstance(value, str) and value else None

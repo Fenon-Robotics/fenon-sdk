@@ -14,10 +14,10 @@ from fenon._core.errors import (
     RateLimitError,
     RunFailedError,
     ServerError,
+    SessionLimitError,
     StorageUrlRejectedError,
     UnsupportedModelError,
     error_class_for_status,
-    error_code_of,
     error_from_response,
     retry_after_of,
 )
@@ -62,7 +62,7 @@ def test_error_from_response_uses_the_envelope() -> None:
         }
     }
     error = error_from_response(
-        422, payload, request_id="req_headerheader", retryable=False, retry_after_s=None
+        422, payload, request_id="req_headerheader", retry_after_s=None, retryable_without_error_body=False
     )
     assert isinstance(error, InvalidInputError)
     assert error.code == "input_invalid"
@@ -77,12 +77,16 @@ def test_error_from_response_uses_the_envelope() -> None:
 
 def test_error_from_response_falls_back_to_the_body_request_id() -> None:
     payload = {"error": {"code": "not_found", "message": "No such run.", "request_id": "req_bodybodybody"}}
-    error = error_from_response(404, payload, request_id=None, retryable=False, retry_after_s=None)
+    error = error_from_response(
+        404, payload, request_id=None, retry_after_s=None, retryable_without_error_body=False
+    )
     assert error.request_id == "req_bodybodybody"
 
 
 def test_error_from_response_without_an_envelope_names_the_status() -> None:
-    error = error_from_response(502, None, request_id=None, retryable=True, retry_after_s=1.5)
+    error = error_from_response(
+        502, None, request_id=None, retry_after_s=1.5, retryable_without_error_body=True
+    )
     assert isinstance(error, ServerError)
     assert error.message == "The Fenon API answered with HTTP 502."
     assert error.code is None
@@ -91,33 +95,23 @@ def test_error_from_response_without_an_envelope_names_the_status() -> None:
     assert error.retry_after_s == 1.5
 
 
-def test_body_retryable_wins_over_the_sdk_decision() -> None:
+def test_the_body_retryable_flag_wins_over_the_status_rule() -> None:
     payload = {"error": {"code": "unavailable", "message": "Down.", "retryable": False}}
-    error = error_from_response(503, payload, request_id=None, retryable=True, retry_after_s=None)
+    error = error_from_response(
+        503, payload, request_id=None, retry_after_s=None, retryable_without_error_body=True
+    )
     assert error.retryable is False
 
 
 def test_malformed_envelope_fields_are_ignored() -> None:
     payload = {"error": {"code": 7, "message": "", "details": ["not", "a", "dict"], "retryable": "yes"}}
-    error = error_from_response(500, payload, request_id=None, retryable=True, retry_after_s=None)
+    error = error_from_response(
+        500, payload, request_id=None, retry_after_s=None, retryable_without_error_body=True
+    )
     assert error.code is None
     assert error.message == "The Fenon API answered with HTTP 500."
     assert error.details == {}
     assert error.retryable is True
-
-
-@pytest.mark.parametrize(
-    ("payload", "expected"),
-    [
-        ({"error": {"code": "rate_limited"}}, "rate_limited"),
-        ({"error": {}}, None),
-        ({"error": "rate_limited"}, None),
-        (["error"], None),
-        (None, None),
-    ],
-)
-def test_error_code_of(payload: object, expected: str | None) -> None:
-    assert error_code_of(payload) == expected
 
 
 @pytest.mark.parametrize(
@@ -154,20 +148,13 @@ def test_repr_shows_only_identifying_fields() -> None:
 
 def test_run_failed_error_carries_the_run_fields() -> None:
     error = RunFailedError(
-        "The frame rate changes partway through this file.",
+        "The model engine couldn't read the video.",
         run_id="run_q3w8e1r5t2y6",
-        stage="preparing_input",
-        frame=141,
-        timestamp_s=4.7,
-        code="variable_frame_rate",
+        stage="processing_frames",
+        code="input_unreadable",
     )
-    assert (error.run_id, error.stage, error.frame, error.timestamp_s) == (
-        "run_q3w8e1r5t2y6",
-        "preparing_input",
-        141,
-        4.7,
-    )
-    assert error.code == "variable_frame_rate"
+    assert (error.run_id, error.stage) == ("run_q3w8e1r5t2y6", "processing_frames")
+    assert error.code == "input_unreadable"
     assert error.retryable is False
 
 
@@ -185,3 +172,22 @@ def test_every_error_is_a_fenon_error() -> None:
     ):
         assert issubclass(error_class, FenonError)
     assert issubclass(RunFailedError, FenonError)
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("active_session_limit", SessionLimitError),
+        ("idempotency_conflict", ServerError),
+        ("already_connected", ServerError),
+    ],
+)
+def test_a_409_maps_by_its_code(code: str, expected: type[FenonError]) -> None:
+    error = error_from_response(
+        409,
+        {"error": {"code": code}},
+        request_id=None,
+        retry_after_s=None,
+        retryable_without_error_body=False,
+    )
+    assert type(error) is expected

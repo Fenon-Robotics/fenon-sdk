@@ -1,23 +1,29 @@
-"""Regenerate the SDK's typed models from the contract in ``docs/``."""
+"""Regenerate the SDK's typed models from the pinned fenon-api contract (docs/features/contract-sync.md)."""
 
 from __future__ import annotations
 
 import argparse
 import ast
 import hashlib
+import json
 import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-DOCS = ROOT / "docs"
+API_CONTRACTS = ROOT / "docs" / "contracts" / "fenon-api"
 PACKAGE = ROOT / "src" / "fenon"
 PYPROJECT = ROOT / "pyproject.toml"
-API_MODULE = Path("_core/_generated.py")
+MODEL_PACKAGES: Mapping[str, Path] = {
+    "fenon.hand_pose.video": Path("models/pose/hamer/_generated"),
+    "fenon.hand_pose.live": Path("models/pose/hamer/_generated_live"),
+}
+RECORDED_SCHEMAS = ("input", "result", "outputs", "row")
 CODEGEN_OPTIONS = (
     "--output-model-type",
     "pydantic_v2.BaseModel",
@@ -34,7 +40,6 @@ CODEGEN_OPTIONS = (
     "string+uri=string",
     "--use-type-alias",
     "--use-title-as-name",
-    "--use-schema-description",
     "--field-extra-keys-without-x-prefix",
     "x-repr",
     "--disable-timestamp",
@@ -45,40 +50,129 @@ CODEGEN_OPTIONS = (
 
 @dataclass(frozen=True)
 class ContractPackage:
-    """A model contract and the SDK package its types are generated into."""
-
     contract_id: str
     version: str
-    package: Path
-    schemas: tuple[str, ...] = ("input", "result", "outputs", "row")
+    schema_dir: Path
+    schemas: tuple[str, ...]
 
     @property
-    def schema_dir(self) -> Path:
-        """Directory holding the contract's schema files."""
-        return DOCS / "contracts" / self.contract_id / self.version
+    def package(self) -> Path:
+        package = MODEL_PACKAGES.get(self.contract_id)
+        if package is None:
+            raise SystemExit(
+                f"the contract names model contract {self.contract_id}; add it to MODEL_PACKAGES"
+            )
+        return package
 
     def schema_sha256(self) -> str:
-        """SHA-256 of the schema files concatenated in ``schemas`` order."""
         digest = hashlib.sha256()
         for name in self.schemas:
             digest.update((self.schema_dir / f"{name}.schema.json").read_bytes())
         return digest.hexdigest()
 
 
-CONTRACTS = (ContractPackage("fenon.hand_pose.video", "1.0.0", Path("models/pose/hamer/_generated")),)
+@dataclass(frozen=True)
+class OpenApiSubset:
+    module: Path
+    title: str
+    root: str
+    also: tuple[str, ...]
+    secrets: dict[str, tuple[str, ...]]
+
+    def json_schema(self, contract: Path) -> dict[str, Any]:
+        components = _load_yaml(contract)["components"]["schemas"]
+        selected: dict[str, Any] = {}
+        pending = [self.root, *self.also]
+        while pending:
+            name = pending.pop()
+            if name not in selected:
+                selected[name] = components[name]
+                pending.extend(_referenced_schemas(components[name]))
+        text = json.dumps(dict(sorted(selected.items()))).replace('"#/components/schemas/', '"#/$defs/')
+        definitions = json.loads(text)
+        for schema, properties in self.secrets.items():
+            for name in properties:
+                definitions[schema]["properties"][name]["x-repr"] = False
+        root = definitions.pop(self.root)
+        return {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "title": self.root,
+            **root,
+            "$defs": definitions,
+        }
+
+
+API_SUBSETS = (
+    OpenApiSubset(
+        module=Path("_core/_generated.py"),
+        title="Recorded-run shapes",
+        root="Run",
+        also=("UploadReservation",),
+        secrets={"UploadReservation": ("upload_url",), "OutputFile": ("url",)},
+    ),
+    OpenApiSubset(
+        module=Path("_live/_generated.py"),
+        title="Live-session shapes",
+        root="ResultsChannelMessage",
+        also=("CreatedLiveSession", "LiveSession"),
+        secrets={"Connection": ("token",), "IceServer": ("username", "credential")},
+    ),
+)
+
+
+def pinned_contract() -> Path:
+    versions = sorted(
+        path for path in API_CONTRACTS.iterdir() if path.is_dir() and not path.name.startswith(".")
+    )
+    if len(versions) != 1:
+        raise SystemExit(f"expected one pinned contract version in {API_CONTRACTS}, found {len(versions)}")
+    return versions[0]
+
+
+def contract_version(openapi: Path) -> str:
+    return str(_load_yaml(openapi)["info"]["version"])
+
+
+def model_contracts(contract: Path) -> list[ContractPackage]:
+    document = _load_yaml(contract / "openapi.yaml")
+    found: dict[tuple[str, str], ContractPackage] = {}
+    for entry in document.get("x-model-contracts", {}).values():
+        schema_dir = contract / entry["schemas"]
+        found[(entry["contract"], entry["version"])] = ContractPackage(
+            entry["contract"], entry["version"], schema_dir, RECORDED_SCHEMAS
+        )
+    for entry in document.get("x-model-data-schemas", {}).values():
+        schema_file = contract / entry["schema"]
+        schema_dir = schema_file.parent
+        found[(schema_dir.parent.name, schema_dir.name)] = ContractPackage(
+            schema_dir.parent.name,
+            schema_dir.name,
+            schema_dir,
+            (schema_file.name.removesuffix(".schema.json"),),
+        )
+    return [found[key] for key in sorted(found)]
 
 
 def generate(target: Path) -> list[Path]:
-    """Write every generated file under ``target``, laid out like ``src/fenon``."""
-    files = [API_MODULE]
-    _run_codegen(
-        DOCS / "openapi.yaml",
-        "openapi",
-        target / API_MODULE,
-        "Shared Fenon API shapes, generated from docs/openapi.yaml by scripts/generate_types.py. "
-        "Do not edit.",
-    )
-    for contract in CONTRACTS:
+    pinned = pinned_contract()
+    openapi = pinned / "openapi.yaml"
+    source = openapi.relative_to(ROOT).as_posix()
+    version = contract_version(openapi)
+    files: list[Path] = []
+    with tempfile.TemporaryDirectory() as directory:
+        for subset in API_SUBSETS:
+            schema = Path(directory) / f"{subset.root}.schema.json"
+            schema.write_text(json.dumps(subset.json_schema(openapi), indent=1), encoding="utf-8")
+            _run_codegen(
+                schema,
+                "jsonschema",
+                target / subset.module,
+                f"{subset.title} from {source}, generated by scripts/generate_types.py. Do not edit.",
+            )
+            with (target / subset.module).open("a", encoding="utf-8") as module:
+                module.write(f'\n\nAPI_CONTRACT_VERSION = "{version}"\n')
+            files.append(subset.module)
+    for contract in model_contracts(pinned):
         names: dict[str, list[str]] = {}
         for schema in contract.schemas:
             module = contract.package / f"{schema}.py"
@@ -99,7 +193,6 @@ def generate(target: Path) -> list[Path]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Regenerate the files, or with ``--check`` report whether they are current."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="fail if the committed files are not current")
     args = parser.parse_args(argv)
@@ -118,7 +211,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _run_codegen(source: Path, file_type: str, output: Path, header: str) -> None:
-    """Run datamodel-code-generator for one input file."""
     output.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         [
@@ -139,8 +231,27 @@ def _run_codegen(source: Path, file_type: str, output: Path, header: str) -> Non
     )
 
 
+def _load_yaml(path: Path) -> Any:
+    import yaml
+
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def _referenced_schemas(node: object) -> list[str]:
+    if isinstance(node, dict):
+        names: list[str] = []
+        for key, value in node.items():
+            if key == "$ref" and isinstance(value, str) and value.startswith("#/components/schemas/"):
+                names.append(value.rsplit("/", 1)[1])
+            else:
+                names.extend(_referenced_schemas(value))
+        return names
+    if isinstance(node, list):
+        return [name for item in node for name in _referenced_schemas(item)]
+    return []
+
+
 def _format(paths: list[Path]) -> None:
-    """Format generated files with ruff, using the repository's settings."""
     subprocess.run(
         [sys.executable, "-m", "ruff", "format", "--quiet", "--config", str(PYPROJECT), *map(str, paths)],
         check=True,
@@ -148,7 +259,6 @@ def _format(paths: list[Path]) -> None:
 
 
 def _public_names(module: Path) -> list[str]:
-    """Return the public top-level class and alias names defined in a generated module."""
     tree = ast.parse(module.read_text(encoding="utf-8"))
     names: list[str] = []
     for node in tree.body:
@@ -160,7 +270,6 @@ def _public_names(module: Path) -> list[str]:
 
 
 def _package_init(contract: ContractPackage, names: dict[str, list[str]]) -> str:
-    """Return the ``__init__.py`` that re-exports a contract's types and defines its constants."""
     seen: dict[str, str] = {}
     for schema, schema_names in names.items():
         for name in schema_names:
@@ -184,11 +293,10 @@ def _package_init(contract: ContractPackage, names: dict[str, list[str]]) -> str
 
 
 def stale_files(generated: Path, installed: Path, files: list[Path]) -> list[Path]:
-    """Return files that differ between a fresh generation and the installed package."""
     stale = [file for file in files if not _same(generated / file, installed / file)]
     expected = set(files)
-    for contract in CONTRACTS:
-        package = installed / contract.package
+    for model_package in MODEL_PACKAGES.values():
+        package = installed / model_package
         if package.is_dir():
             stale.extend(
                 path.relative_to(installed)
@@ -201,14 +309,12 @@ def stale_files(generated: Path, installed: Path, files: list[Path]) -> list[Pat
 
 
 def _same(generated: Path, installed: Path) -> bool:
-    """Return whether two files exist and have identical bytes."""
     return installed.is_file() and generated.read_bytes() == installed.read_bytes()
 
 
 def _install(target: Path, files: list[Path]) -> None:
-    """Copy generated files into ``src/fenon``, replacing each contract package as a whole."""
-    for contract in CONTRACTS:
-        shutil.rmtree(PACKAGE / contract.package, ignore_errors=True)
+    for model_package in MODEL_PACKAGES.values():
+        shutil.rmtree(PACKAGE / model_package, ignore_errors=True)
     for file in files:
         destination = PACKAGE / file
         destination.parent.mkdir(parents=True, exist_ok=True)

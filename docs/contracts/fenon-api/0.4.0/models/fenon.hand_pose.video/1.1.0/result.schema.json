@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://api.fenon.ai/contracts/models/fenon.hand_pose.video/1.1.0/result.schema.json",
+  "title": "HandPoseRunResult",
+  "description": "The run's result object for contract fenon.hand_pose.video 1.1.0.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "video",
+    "range",
+    "joint_order",
+    "camera"
+  ],
+  "properties": {
+    "video": {
+      "title": "Video",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "width",
+        "height",
+        "fps",
+        "frame_count",
+        "duration_s"
+      ],
+      "properties": {
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "fps": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Constant frame rate of the source video."
+        },
+        "frame_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "duration_s": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+    "range": {
+      "title": "ProcessedRange",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start_s",
+        "end_s",
+        "start_frame",
+        "end_frame"
+      ],
+      "description": "The range actually processed, after clipping. end_frame is exclusive.",
+      "properties": {
+        "start_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "end_s": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "start_frame": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end_frame": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "joint_order": {
+      "const": [
+        "wrist",
+        "thumb_cmc",
+        "thumb_mcp",
+        "thumb_ip",
+        "thumb_tip",
+        "index_mcp",
+        "index_pip",
+        "index_dip",
+        "index_tip",
+        "middle_mcp",
+        "middle_pip",
+        "middle_dip",
+        "middle_tip",
+        "ring_mcp",
+        "ring_pip",
+        "ring_dip",
+        "ring_tip",
+        "pinky_mcp",
+        "pinky_pip",
+        "pinky_dip",
+        "pinky_tip"
+      ]
+    },
+    "camera": {
+      "title": "Camera",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "focal_length_px",
+        "principal_point_px",
+        "assumed"
+      ],
+      "properties": {
+        "model": {
+          "const": "pinhole"
+        },
+        "focal_length_px": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Focal length the model used, in pixels of the source frame."
+        },
+        "principal_point_px": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "Image centre [width / 2, height / 2]."
+        },
+        "assumed": {
+          "type": "boolean",
+          "description": "True when the focal length is the model's assumption, not a calibration."
+        }
+      }
+    }
+  }
+}

@@ -13,7 +13,7 @@ import pytest
 from pydantic import ValidationError
 
 import fenon
-from fenon._core.usage import Usage
+from fenon._core import Usage
 from fenon.models.pose.hamer import _generated as hand_pose
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,19 +28,26 @@ def test_module_entry_point_prints_the_version() -> None:
     assert result.stdout.strip() == f"fenon {fenon.__version__}"
 
 
-def imported_modules(path: Path) -> set[str]:
+def resolved_imports(path: Path) -> list[tuple[str, tuple[str, ...]]]:
     package = ".".join(path.relative_to(ROOT / "src").with_suffix("").parts)
     if path.name != "__init__.py":
         package = package.rsplit(".", 1)[0]
-    found: set[str] = set()
+    found: list[tuple[str, tuple[str, ...]]] = []
     for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
         if isinstance(node, ast.Import):
-            found.update(alias.name for alias in node.names)
+            found.extend((alias.name, ()) for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
             base = package.rsplit(".", node.level - 1)[0] if node.level > 1 else package
             target = node.module if node.level == 0 else ".".join(filter(None, [base, node.module]))
-            found.update(f"{target}.{alias.name}" for alias in node.names)
-            found.add(target or base)
+            found.append((target or base, tuple(alias.name for alias in node.names)))
+    return found
+
+
+def imported_modules(path: Path) -> set[str]:
+    found: set[str] = set()
+    for module, names in resolved_imports(path):
+        found.add(module)
+        found.update(f"{module}.{name}" for name in names)
     return found
 
 
@@ -59,6 +66,43 @@ def test_core_imports_nothing_above_it() -> None:
         assert outside <= {"fenon._version", "fenon._version.__version__"}, (module, outside)
 
 
+def test_live_imports_only_the_core_and_itself() -> None:
+    allowed = ("fenon._core", "fenon._live", "fenon._version")
+    for module, imports in modules_under("fenon/_live").items():
+        outside = {name for name in imports if name.startswith("fenon") and not name.startswith(allowed)}
+        assert outside == set(), (module, outside)
+
+
+def test_only_the_live_media_modules_import_aiortc_or_av() -> None:
+    media = {"fenon/_live/encoder.py", "fenon/_live/source.py", "fenon/_live/transport.py"}
+    for module, imports in modules_under("fenon").items():
+        third_party = {name for name in imports if name.split(".")[0] in ("aiortc", "av")}
+        assert not third_party or module in media, (module, third_party)
+
+
+def test_importing_fenon_loads_aiortc_and_av_only_on_the_first_live_call() -> None:
+    script = (
+        "import sys, fenon; print(sorted({'aiortc', 'av'} & {name.split('.')[0] for name in sys.modules}))"
+    )
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
+    assert result.stdout.strip() == "[]"
+
+
+@pytest.mark.parametrize("package", ["fenon._core", "fenon._live"])
+def test_packages_are_used_only_through_their_interface(package: str) -> None:
+    folder = ROOT / "src" / Path(*package.split("."))
+    inside = {path.stem for path in folder.iterdir() if path.suffix == ".py" or path.is_dir()}
+    inside -= {"__init__", "__pycache__"}
+    for path in sorted((ROOT / "src" / "fenon").rglob("*.py")):
+        if path.is_relative_to(folder):
+            continue
+        for module, names in resolved_imports(path):
+            reaches_inside = module.startswith(f"{package}.") or (
+                module == package and bool(inside & set(names))
+            )
+            assert not reaches_inside, (path.relative_to(ROOT / "src").as_posix(), module, names)
+
+
 def test_models_never_import_the_client() -> None:
     for module, imports in modules_under("fenon/models").items():
         assert not any(name.startswith("fenon._client") for name in imports), module
@@ -67,11 +111,12 @@ def test_models_never_import_the_client() -> None:
 def test_the_pose_base_never_imports_an_implementation() -> None:
     imports = imported_modules(ROOT / "src" / "fenon" / "models" / "pose" / "base.py")
     assert not any(name.startswith("fenon.models.pose.hamer") for name in imports)
-    assert "fenon._core.uploads.upload_file" in imports
+    assert "fenon._core.upload_file" in imports
 
 
 def test_shipped_contract_hash_matches_the_schema_files() -> None:
-    schema_dir = ROOT / "docs" / "contracts" / hand_pose.CONTRACT_ID / hand_pose.CONTRACT_VERSION
+    pinned = next(path for path in (ROOT / "docs" / "contracts" / "fenon-api").iterdir() if path.is_dir())
+    schema_dir = pinned / "models" / hand_pose.CONTRACT_ID / hand_pose.CONTRACT_VERSION
     digest = hashlib.sha256()
     for name in ("input", "result", "outputs", "row"):
         digest.update((schema_dir / f"{name}.schema.json").read_bytes())

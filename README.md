@@ -1,6 +1,6 @@
 # Fenon Python SDK
 
-Run Fenon's robotics models on your own data. The first model is hand-pose estimation on recorded video.
+Run Fenon's robotics models on your own data. The first model is hand-pose estimation on video, streamed live to the model.
 
 ## Install
 
@@ -28,40 +28,37 @@ from fenon import Fenon
 with Fenon() as client:
     result = client.pose.hand(model="fenon/hand-pose-hm", input="clip.mp4")
 
-    for frame in result.frames:
-        for hand in frame.hands:
-            print(frame.frame_index, hand.handedness, hand.pixel_landmarks[0])
+for frame in result.frames:
+    for hand in frame.hands:
+        print(frame.frame_index, frame.time_s, hand.handedness, hand.pixel_landmarks[0])
 
-    print(result.usage)
-    result.save("clip.jsonl")
+print(result.end_reason, result.usage)    # usage in seconds of connected time
+result.save("clip.jsonl")
 ```
 
-- The whole video is processed. Supported files: `.mp4`, `.mov`, `.webm`.
-- `result.video`, `result.camera` and `result.joint_order` describe what the model saw and assumed.
-- `result.frames` and `result.save()` download the output the first time they are used, so use them while the client is open.
+- The video streams to the model in real time (`mode="live"`, the default), so a 30 s clip takes about 30 s; the call returns when it ends.
+- Rotated phone videos are turned upright first. A video that changes size partway is refused.
+- Results are lossy by design: `result.frames` holds the frames that got a result, in order; compare with `result.frames_sent`. `result.gaps` lists the stalls the server reported.
+- If the session ends early (for example, the connection is lost), `LiveSessionError` is raised and `error.result` holds the frames that arrived.
+- Works in Jupyter. Ctrl-C ends the session before the call returns.
+- The live model is still being connected on Fenon's side; until it is, sessions are refused with `not_implemented`.
 
-## Without waiting
+## Recorded mode: coming soon
 
-```python
-job = client.pose.hand(model="fenon/hand-pose-hm", input="clip.mp4", wait=False)
-job.status        # "preparing_input", "queued", "processing_frames", "writing_results", "succeeded", ...
-result = job.result()
-job.cancel()
-```
+Uploading a file and getting every frame back (`mode="recorded"`) isn't available yet: asking for it raises `InvalidInputError` with code `mode_not_available`, before anything is sent. Use live mode, the default.
 
 ## Errors
 
-Every error from the API, storage or a run is a `fenon.FenonError` with `message`, `code`, `fix`, `details`, `request_id`, `status_code`, `retryable` and `retry_after_s`. Programming mistakes raise Python's own exceptions: `TypeError` for an argument of the wrong type, `OSError` from `save()` for a path that can't be written, and `RuntimeError` when the client is already closed.
+Every error is a `fenon.FenonError` with `message`, `code`, `fix`, `details`, `request_id`, `status_code`, `retryable` and `retry_after_s`. Programming mistakes raise Python's own exceptions: `TypeError` for an argument of the wrong type, `OSError` from `save()` for a path that can't be written, and `RuntimeError` when the client is already closed.
 
 | Error | When |
 |---|---|
 | `AuthError` | No key, or the key was rejected |
-| `InvalidInputError` | A local check failed (missing file, unsupported file type, unsupported mode) or the API rejected the input |
-| `RunFailedError` | The run failed or was cancelled; carries `run_id`, `stage`, `frame`, `timestamp_s` |
+| `InvalidInputError` | A local check failed (missing or unreadable file, unsupported video or mode) or the API rejected the input |
+| `LiveSessionError` | The live session ended before the whole video was sent; `error.result` holds what arrived |
+| `SessionLimitError` | Your project already runs as many live sessions as it may; end one first |
 | `RateLimitError`, `NetworkError`, `ServerError` | Still failing after the SDK's retries |
-| `CreditsError`, `NotFoundError`, `UnsupportedModelError` | Out of credits; unknown model or run; a model this SDK version can't read |
-
-An error raised while waiting carries `error.job`; the run keeps going and `error.job.result()` resumes waiting.
+| `CreditsError`, `NotFoundError` | Out of credits; unknown model |
 
 ## Configuration
 
@@ -69,7 +66,7 @@ An error raised while waiting carries `error.job`; the run keeps going and `erro
 Fenon(api_key=None, base_url=None, timeout=60.0, max_retries=2)
 ```
 
-`FENON_API_KEY` and `FENON_BASE_URL` can replace the first two arguments. Set `FENON_LOG=info` or `FENON_LOG=debug` to log each API call. Logs never contain keys, request bodies, file paths or storage URLs.
+`FENON_API_KEY` and `FENON_BASE_URL` can replace the first two arguments. Set `FENON_LOG=info` or `FENON_LOG=debug` to log each API call. Logs never contain keys, session tokens, request bodies or file paths.
 
 `python -m fenon` prints the installed version.
 

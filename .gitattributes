@@ -1,2 +1,2 @@
 docs/contracts/** -text
-docs/openapi.yaml -text
+tests/live/fixtures/** -text

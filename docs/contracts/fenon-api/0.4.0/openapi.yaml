@@ -1,0 +1,1854 @@
+openapi: 3.1.0
+info:
+  title: Fenon API
+  version: 0.4.0
+  description: |
+    The contract of fenon-api, the Fenon service backend, and of the live gateway it hands clients to. fenon-api owns
+    it: a change lands here first, then in fenon-api, the gateway, the SDK and the console's live client. Pre-release:
+    it may change until 1.0.0.
+
+    ## Callers
+
+    | Caller | Paths | Credential |
+    | --- | --- | --- |
+    | SDKs and other API clients | `/v1/live/sessions`, `/v1/uploads`, `/v1/runs` | A project API key from the console (`apiKey`) |
+    | Live clients (SDK, console) | the gateway's `/v1/sessions/{session_id}` paths | The session token from `connection.token` (`sessionToken`) |
+    | The console's server | `/console/...` | A short-lived JWT from the console's Better Auth `jwt` plugin (`consoleJwt`) |
+    | The live gateway | `/internal/live/checkpoints` | The gateway secret (`gatewaySecret`) |
+    | The host's scheduler | `/internal/maintenance` | `CRON_SECRET` (`cronSecret`) |
+    | Browsers (the console's Playground) | `/samples/{file_name}` | None |
+    | The host | `/health`, `/ready` | None |
+
+    ## Conventions
+
+    - **Errors** use one envelope, `ErrorResponse`: `code` (stable, machine-readable), `message` (for people),
+      `fix` (what to change, or null), `retryable`, `retry_after_s`, `details` (fields named per code below) and
+      `request_id`. The gateway uses the same envelope.
+    - **Request IDs:** every response carries `X-Request-Id` (`req_` and 12 characters of `0-9a-z`), the same value
+      as `error.request_id`. Quote it when reporting a problem.
+    - **Retries:** retry only when `retryable` is true, after `Retry-After` seconds when it is sent. `500
+      internal_error` is retryable. Creating a session is safe to retry with the same `Idempotency-Key`.
+    - **Idempotency:** `POST /v1/live/sessions`, `POST /v1/uploads`, `POST /v1/runs` and `POST /v1/runs/{run_id}/cancel`
+      require `Idempotency-Key` (1 to 64 of `A-Z a-z 0-9 - _`), scoped to
+      the project. The same key and body replay the first success with `Idempotent-Replayed: true` for 24 hours; the
+      same key with another body is `409 idempotency_conflict`; while the first request still runs it is `409
+      idempotency_in_progress` (retryable). A failed request doesn't keep its key.
+    - **Rate limits** are per API key, in fixed windows: `create` 10 per 60 s (POST), `read` 120 per 60 s (GET),
+      `write` 30 per 60 s (DELETE, and POST to cancel a run). Over the limit is `429 rate_limited` with `Retry-After` at the window's end.
+      Values are provisional.
+    - **Bodies** are JSON (`application/json`, at most 1 MB). Unknown fields, wrong types (`10.0` isn't an integer)
+      and out-of-range values are refused with `422 input_invalid`, whose `details.field` is an RFC 6901 JSON Pointer.
+    - **Caching:** every response carries `Cache-Control: no-store`; responses can hold session tokens and relay
+      credentials.
+    - **Identifiers** are a type prefix and 12 characters of `0-9 a-h j k m n p-t v-z`: `ls_` live sessions, `ws_`
+      workspaces, `proj_` projects, `upl_` uploads, `run_` recorded and playground runs. **Timestamps** are UTC, ISO 8601 with milliseconds
+      (`2026-10-31T12:00:00.000Z`).
+    - **Versioning:** new fields, endpoints and optional parameters can appear at any time; clients must ignore
+      fields they don't know. A new value in an existing enum (a status, an end reason, an error code) is a breaking
+      change and comes with a new contract version.
+
+    ## Not in this contract
+
+    The console's own data and actions (sign-in, workspaces, projects, members, API keys, billing) are the console's
+    and never go through fenon-api. Prices are the billing provider's: fenon-api reports usage in units.
+  license:
+    name: Proprietary
+servers:
+  - url: http://localhost:8000
+    description: fenon-api in local development (no deployment yet)
+tags:
+  - name: live sessions
+    description: |
+      A live session runs a perception model on a client's video, frame by frame, and streams the results back.
+      The client creates a session here, then connects to the gateway with `connection` (WebRTC: an H.264 video
+      track in, a `results` data channel out). A video file is sent the same way, decoded and streamed in real time
+      at its own frame rate. Fenon stores no video, frames or results: only the session record and its usage.
+
+      **Statuses:** `waiting_for_media` (created, no media yet) → `live` (the gateway reported a media connection) →
+      `ended`. A session can skip `live`. `ended` is final.
+
+      **End reasons:** `client_closed` (the client hung up), `deleted` (DELETE here), `idle_timeout` (no media for
+      `idle_timeout_s`), `max_duration`, `never_connected` (no connection before `token_connect_by`; recorded by the
+      gateway then, or here 30 s later when no gateway reported), `gateway_lost` (the gateway stopped reporting for
+      more than 30 s), `failed` (the model or the results channel failed), `server_shutdown` (the gateway drained),
+      `unsupported_stream` (the video isn't H.264 Baseline).
+
+      **Usage** is connected time in `second`s: from the media connection to the end, rounded up per session, at
+      least 10 s for a session that connected, 0 for one that never did. It grows while the session runs;
+      `usage.final` turns true when the gateway reports the end, or, if it never does, 60 s after the session ended,
+      with the last reported value.
+
+      Reads settle sessions that ended without a report: a read can return a session as `ended` that was `live` or
+      `waiting_for_media` before.
+  - name: recorded runs
+    description: |
+      A recorded run processes an uploaded video on the model engine and returns every frame's result as files. Reserve
+      an upload (`POST /v1/uploads`), PUT the file to its `upload_url` with exactly its `headers`, create a run on it
+      (`POST /v1/runs`), read the run (`GET /v1/runs/{run_id}`, waiting `Fenon-Poll-After-Ms` between reads) until it is
+      final, then download its `outputs`. Available only where the object store and the model engine are configured
+      (`501 not_implemented`, part `recorded_runs`, otherwise).
+
+      **Statuses:** `queued` → `processing_frames` → `succeeded`, `failed` or `canceled`; the last three are final.
+
+      **Outputs** are named files, each a short-lived download link (`url`, valid until `url_expires_at`; read the run
+      again for a fresh one): the per-frame results (for `fenon/hand-pose-hm`, `annotations`: JSON Lines, one row per
+      frame in the model contract's row shape) and, when the run asked for it in `outputs`, the input video with the
+      results drawn on it (`video`, MP4; frame N of the video is row N of `annotations`). Outputs are kept for a limited
+      time after the run finishes (`outputs_expire_at`; 24 h by default), then `outputs` is null and `outputs_expired` is
+      true, while `result` and `usage` stay. An upload feeds one run and is deleted once that run is final.
+
+      **Model contracts:** each model's input, result, outputs and row shapes are versioned JSON Schemas under
+      `models/<contract>/<version>/` (`x-model-contracts`); a run names its contract with the SHA-256 of those files
+      (input, result, outputs, row, concatenated).
+
+      **Usage** is the model's unit: for `fenon/hand-pose-hm`, the `frame`s a succeeded run processed; 0 for a failed or
+      canceled run. Not charged yet.
+  - name: gateway
+    description: |
+      Served by the live gateway at the origin of `connection.offer_url`, not by fenon-api. Authenticated with
+      `connection.token`. Browsers are allowed from configured origins (CORS: `Authorization` and `Content-Type`
+      allowed; `Retry-After`, `X-Request-Id` and `Location` exposed).
+
+      **The results channel.** The client creates a data channel labelled `results` in its offer, with `{ordered:
+      false, maxRetransmits: 1}`. The gateway sends JSON text messages on it (`ResultsChannelMessage`): `result`,
+      `gap` and `end`. Delivery is lossy by design: when the link is slow only the newest result is kept; a result
+      is dropped once 500 ms have passed since the gateway received its frame; a result over 16 KB is dropped. There
+      is no rate cap: every frame goes to the model, which returns a result for each frame it processes and may skip
+      frames when it falls behind. `gap` and `end` are always sent while the channel is open. Never expect a result
+      for every frame. If the channel isn't open 5 s after the media connects, the session ends `failed`.
+
+      **Pairing results with frames:** `rtp_timestamp` is the RTP timestamp of the frame the result belongs to;
+      `media_time_90k` is the same instant in 90 kHz ticks from the first complete frame the gateway assembled (frames
+      it then dropped still count), with wraps removed.
+  - name: console
+    description: |
+      Called by the console's server for its pages, with a JWT for the signed-in user. Paths name the workspace and
+      project by their public IDs; a user who isn't a member, or a project of another workspace, gets the same `404`
+      as one that doesn't exist. The dashboard and usage are provisional; the Playground is illustrative: nothing
+      runs and nothing is stored.
+  - name: samples
+    description: The Playground's sample media, public, loaded by browsers.
+  - name: internal
+    description: Called by Fenon's own services, never by clients.
+  - name: health
+    description: Probes for the host.
+paths:
+  /v1/live/sessions:
+    post:
+      tags: [live sessions]
+      operationId: createLiveSession
+      summary: Create a live session and get its connection
+      description: |
+        Checks, in order: the API key, live sessions being available on this deployment (501 otherwise), the
+        `create` rate limit, the body, the `Idempotency-Key`, the model, relay credentials, and the project's
+        active-session limit (5). A replay carries a freshly issued `connection` while the session still waits for
+        media and no gateway has taken its connection, and `connection: null` afterwards.
+      security: [{apiKey: []}]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CreateLiveSessionRequest"}
+      responses:
+        "201":
+          description: The session, waiting for media, with its connection.
+          headers:
+            Idempotent-Replayed:
+              description: "`true` when this is a replay of an earlier success with the same key and body."
+              schema: {const: "true"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CreatedLiveSession"}
+        "400": {$ref: "#/components/responses/InvalidJsonOrIdempotencyKey"}
+        "401": {$ref: "#/components/responses/InvalidApiKey"}
+        "404":
+          description: |
+            `model_not_found` (the model isn't a live model; `details.models` lists the ones that are), or
+            `not_found` (a replay whose session no longer exists).
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ErrorResponse"
+                  - properties:
+                      error:
+                        properties:
+                          code: {enum: [model_not_found, not_found]}
+        "409":
+          description: |
+            `active_session_limit` (`details.limit`: end a session first), `idempotency_conflict` (the key was used
+            with another body), or `idempotency_in_progress` (retryable).
+          headers:
+            Retry-After: {$ref: "#/components/headers/RetryAfter"}
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ErrorResponse"
+                  - properties:
+                      error:
+                        properties:
+                          code: {enum: [active_session_limit, idempotency_conflict, idempotency_in_progress]}
+        "413": {$ref: "#/components/responses/RequestTooLarge"}
+        "415": {$ref: "#/components/responses/UnsupportedMediaType"}
+        "422": {$ref: "#/components/responses/InputInvalid"}
+        "429": {$ref: "#/components/responses/RateLimited"}
+        "500": {$ref: "#/components/responses/InternalError"}
+        "501": {$ref: "#/components/responses/NotImplemented"}
+        "503":
+          description: "`unavailable`: relay credentials couldn't be issued. Nothing was stored; retry after `Retry-After`."
+          headers:
+            Retry-After: {$ref: "#/components/headers/RetryAfter"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/UnavailableError"}
+    get:
+      tags: [live sessions]
+      operationId: listLiveSessions
+      summary: List the project's live sessions, newest first
+      security: [{apiKey: []}]
+      parameters:
+        - name: limit
+          in: query
+          description: 1 to 100, decimal digits only. Default 100.
+          schema: {type: string, pattern: "^[0-9]+$"}
+        - name: after
+          in: query
+          description: A `next_cursor` from an earlier page of this list; nothing else is accepted.
+          schema: {type: string}
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/LiveSessionList"}
+        "400":
+          description: "`invalid_request`: `details.field` is `limit` or `after`."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/InvalidRequestError"}
+        "401": {$ref: "#/components/responses/InvalidApiKey"}
+        "429": {$ref: "#/components/responses/RateLimited"}
+        "500": {$ref: "#/components/responses/InternalError"}
+        "501": {$ref: "#/components/responses/NotImplemented"}
+  /v1/live/sessions/{session_id}:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      tags: [live sessions]
+      operationId: getLiveSession
+      summary: Get a live session with its usage so far
+      security: [{apiKey: []}]
+      responses:
+        "200":
+          description: The session.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/LiveSession"}
+        "401": {$ref: "#/components/responses/InvalidApiKey"}
+        "404": {$ref: "#/components/responses/SessionNotFound"}
+        "429": {$ref: "#/components/responses/RateLimited"}
+        "500": {$ref: "#/components/responses/InternalError"}
+        "501": {$ref: "#/components/responses/NotImplemented"}
+    delete:
+      tags: [live sessions]
+      operationId: endLiveSession
+      summary: End a live session
+      description: |
+        Ends the session (`deleted`); the gateway stops it within one checkpoint interval (5 s) and reports the final
+        usage. Ending an ended session returns it unchanged.
+      security: [{apiKey: []}]
+      responses:
+        "200":
+          description: The ended session.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/LiveSession"}
+        "401": {$ref: "#/components/responses/InvalidApiKey"}
+        "404": {$ref: "#/components/responses/SessionNotFound"}
+        "429": {$ref: "#/components/responses/RateLimited"}
+        "500": {$ref: "#/components/responses/InternalError"}
+        "501": {$ref: "#/components/responses/NotImplemented"}
+  /v1/uploads:
+    post:
+      tags: [recorded runs]
+      operationId: createUpload
+      summary: Reserve an upload and get the link to put the video at
+      description: |
+        Checks, in order: the API key, recorded runs being available on this deployment (501 otherwise), the `create`
+        rate limit, the body and the `Idempotency-Key`. Takes MP4 (`video/mp4`) and QuickTime (`video/quicktime`) up to
+        4 GiB. PUT the file to `upload_url` once, with exactly `headers` and no `Authorization`, before `expires_at`. A
+        replay returns the same upload with a fresh link while no run has used it.
+      security: [{apiKey: []}]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CreateUploadRequest"}
+      responses:
+        "201":
+          description: The upload, waiting for its file.
+          headers:
+            Idempotent-Replayed:
+              description: "`true` when this is a replay of an earlier success with the same key and body."
+              schema: {const: "true"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/UploadReservation"}
+        "400": {$ref: "#/components/responses/InvalidJsonOrIdempotencyKey"}
+        "401": {$ref: "#/components/responses/InvalidApiKey"}
+        "404":
+          description: "`not_found`: a replay whose upload was used or deleted."
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ErrorResponse"
+                  - properties:
+                      error:
+                        properties:
+                          code: {const: not_found}
+        "409":
+          description: "`idempotency_conflict` (the key was used with another body) or `idempotency_in_progress` (retryable)."
+          headers:
+            Retry-After: {$ref: "#/components/headers/RetryAfter"}
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ErrorResponse"
+                  - properties:
+                      error:
+                        properties:
+                          code: {enum: [idempotency_conflict, idempotency_in_progress]}
+        "413":
+          description: "`file_too_large` (`size_bytes` is over the limit; `details.max_size_bytes`) or `request_too_large` (the JSON body is over 1 MB)."
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ErrorResponse"
+                  - properties:
+                      error:
+                        properties:
+                          code: {enum: [file_too_large, request_too_large]}
+        "415": {$ref: "#/components/responses/UnsupportedMediaType"}
+        "422": {$ref: "#/components/responses/InputInvalid"}
+        "429": {$ref: "#/components/responses/RateLimited"}
+        "500": {$ref: "#/components/responses/InternalError"}
+        "501": {$ref: "#/components/responses/NotImplemented"}
+  /v1/runs:
+    post:
+      tags: [recorded runs]
+      operationId: createRun
+      summary: Start a recorded run on an upload
+      description: |
+        Checks, in order: the API key, recorded runs being available (501 otherwise), the `create` rate limit, the body,
+        the `Idempotency-Key`, the model, its input, the outputs asked for, then the upload: in this project
+        (`input_invalid` on the input's upload field), stored (`upload_not_ready`), at its reserved size
+        (`upload_size_mismatch`) and not used by another run (`upload_already_used`). A replay returns the run as it is
+        now.
+      security: [{apiKey: []}]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CreateRunRequest"}
+      responses:
+        "202":
+          description: The run, queued.
+          headers:
+            Idempotent-Replayed:
+              description: "`true` when this is a replay of an earlier success with the same key and body."
+              schema: {const: "true"}
+            Fenon-Poll-After-Ms:
+              description: Milliseconds to wait before reading the run again; sent while the run isn't final.
+              schema: {type: string, pattern: "^[0-9]+$"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Run"}
+        "400": {$ref: "#/components/responses/InvalidJsonOrIdempotencyKey"}
+        "401": {$ref: "#/components/responses/InvalidApiKey"}
+        "404":
+          description: "`model_not_found` (not a recorded model; `details.models` lists them) or `not_found` (a replay whose run no longer exists)."
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ErrorResponse"
+                  - properties:
+                      error:
+                        properties:
+                          code: {enum: [model_not_found, not_found]}
+        "409":
+          description: "`upload_already_used` (upload the video again), `idempotency_conflict` or `idempotency_in_progress` (retryable)."
+          headers:
+            Retry-After: {$ref: "#/components/headers/RetryAfter"}
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ErrorResponse"
+                  - properties:
+                      error:
+                        properties:
+                          code: {enum: [upload_already_used, idempotency_conflict, idempotency_in_progress]}
+        "413": {$ref: "#/components/responses/RequestTooLarge"}
+        "415": {$ref: "#/components/responses/UnsupportedMediaType"}
+        "422":
+          description: "`input_invalid` (`details.field`), `upload_not_ready` (PUT the file first) or `upload_size_mismatch` (`details.expected_bytes`, `details.received_bytes`)."
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ErrorResponse"
+                  - properties:
+                      error:
+                        properties:
+                          code: {enum: [input_invalid, upload_not_ready, upload_size_mismatch]}
+        "429": {$ref: "#/components/responses/RateLimited"}
+        "500": {$ref: "#/components/responses/InternalError"}
+        "501": {$ref: "#/components/responses/NotImplemented"}
+    get:
+      tags: [recorded runs]
+      operationId: listRuns
+      summary: List the project's runs, newest first
+      security: [{apiKey: []}]
+      parameters:
+        - name: limit
+          in: query
+          description: 1 to 100, decimal digits only. Default 100.
+          schema: {type: string, pattern: "^[0-9]+$"}
+        - name: after
+          in: query
+          description: A `next_cursor` from an earlier page of this list; nothing else is accepted.
+          schema: {type: string}
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/RunList"}
+        "400":
+          description: "`invalid_request`: `details.field` is `limit` or `after`."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/InvalidRequestError"}
+        "401": {$ref: "#/components/responses/InvalidApiKey"}
+        "429": {$ref: "#/components/responses/RateLimited"}
+        "500": {$ref: "#/components/responses/InternalError"}
+        "501": {$ref: "#/components/responses/NotImplemented"}
+  /v1/runs/{run_id}:
+    parameters:
+      - $ref: "#/components/parameters/RunId"
+    get:
+      tags: [recorded runs]
+      operationId: getRun
+      summary: Get a run, with fresh links to its outputs
+      security: [{apiKey: []}]
+      responses:
+        "200":
+          description: The run.
+          headers:
+            Fenon-Poll-After-Ms:
+              description: Milliseconds to wait before reading the run again; sent while the run isn't final.
+              schema: {type: string, pattern: "^[0-9]+$"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Run"}
+        "401": {$ref: "#/components/responses/InvalidApiKey"}
+        "404": {$ref: "#/components/responses/RunNotFound"}
+        "429": {$ref: "#/components/responses/RateLimited"}
+        "500": {$ref: "#/components/responses/InternalError"}
+        "501": {$ref: "#/components/responses/NotImplemented"}
+  /v1/runs/{run_id}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/RunId"
+    post:
+      tags: [recorded runs]
+      operationId: cancelRun
+      summary: Cancel a run
+      description: |
+        A queued or processing run becomes `canceled` (`error.code` `canceled`); a final run is returned unchanged. The
+        model engine may finish a job it already started; its outputs are deleted.
+      security: [{apiKey: []}]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: The run.
+          headers:
+            Idempotent-Replayed:
+              description: "`true` when this is a replay of an earlier success with the same key and body."
+              schema: {const: "true"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Run"}
+        "400":
+          description: "`invalid_request`: send an `Idempotency-Key` (`details.header`)."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/InvalidRequestError"}
+        "401": {$ref: "#/components/responses/InvalidApiKey"}
+        "404": {$ref: "#/components/responses/RunNotFound"}
+        "409":
+          description: "`idempotency_conflict` or `idempotency_in_progress` (retryable)."
+          headers:
+            Retry-After: {$ref: "#/components/headers/RetryAfter"}
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ErrorResponse"
+                  - properties:
+                      error:
+                        properties:
+                          code: {enum: [idempotency_conflict, idempotency_in_progress]}
+        "429": {$ref: "#/components/responses/RateLimited"}
+        "500": {$ref: "#/components/responses/InternalError"}
+        "501": {$ref: "#/components/responses/NotImplemented"}
+  /v1/sessions/{session_id}/offer:
+    servers:
+      - url: "{gateway}"
+        description: The live gateway, at the origin of `connection.offer_url`.
+        variables:
+          gateway:
+            default: http://localhost:8790
+            description: The gateway's origin (local development default).
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      tags: [gateway]
+      operationId: offerLiveSession
+      summary: Connect media with an SDP offer
+      description: |
+        POST to `connection.offer_url` before `connection.token_connect_by`. The offer must have exactly one video
+        section sending to the gateway, offering H.264 Constrained Baseline (or Baseline) with
+        `packetization-mode=1`, no simulcast, and the `results` data channel. Audio is ignored. Rotation isn't
+        negotiated: senders rotate pixels themselves. The answer carries every candidate (no trickle ICE); use
+        `connection.ice_servers`. The video's profile is also checked on the bitstream: a non-Baseline stream ends
+        the session `unsupported_stream`. After any loss the gateway drops frames until the next keyframe and asks for
+        one (RTCP PLI, at most every 500 ms); a sender that doesn't answer recovers only at its next periodic keyframe.
+
+        Checks, in order: the gateway not draining (503), the content type (415), the size (64 KB, 413), the token
+        for this session inside its connect window (401), no connection yet on this gateway (409), a model engine
+        connected (501), the offer rules above (422), the engine accepting the session within 5 s (503
+        `engine_unavailable`), a free media port (503 `unavailable`), then fenon-api recording this as the session's
+        one connection (`claimLiveConnection`): a session that already has a connection, on any gateway, answers 409;
+        one that has ended or no longer exists, 401; fenon-api unreachable, 503. After a 422 or a 503 the session can
+        take another offer. A session takes one connection: after a dropped connection or a gateway restart, create
+        a new session.
+      security: [{sessionToken: []}]
+      requestBody:
+        required: true
+        content:
+          application/sdp:
+            schema: {type: string, maxLength: 65536}
+      responses:
+        "201":
+          description: The SDP answer. The session runs until it ends; its results arrive on the `results` channel.
+          headers:
+            Location:
+              description: "`/v1/sessions/{session_id}`, the session's path on this gateway."
+              schema: {type: string}
+          content:
+            application/sdp:
+              schema: {type: string}
+        "401":
+          description: "`invalid_token`: missing, invalid, for another session, past `token_connect_by`, or for a session that has ended or no longer exists."
+          headers:
+            WWW-Authenticate: {$ref: "#/components/headers/WwwAuthenticate"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/InvalidTokenError"}
+        "409":
+          description: "`already_connected`: the session already has a connection, on this or another gateway."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ErrorResponse"}
+        "413":
+          description: "`request_too_large`: the offer is over 64 KB."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ErrorResponse"}
+        "415":
+          description: "`unsupported_media_type`: send the offer as `application/sdp`."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ErrorResponse"}
+        "422":
+          description: "`offer_invalid`: the offer breaks a rule (the message names it) or couldn't be negotiated."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ErrorResponse"}
+        "500":
+          description: "`internal_error`, retryable after 1 s."
+          headers:
+            Retry-After: {$ref: "#/components/headers/RetryAfter"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ErrorResponse"}
+        "501":
+          description: "`not_implemented`: no model engine is connected to this gateway."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ErrorResponse"}
+        "503":
+          description: |
+            `engine_unavailable` (the engine refused the session, didn't answer within 5 s, or failed) or
+            `unavailable` (the gateway is draining, has no free media port, or couldn't reach fenon-api to record the
+            connection). Retry after `Retry-After`.
+          headers:
+            Retry-After: {$ref: "#/components/headers/RetryAfter"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ErrorResponse"}
+  /v1/sessions/{session_id}:
+    servers:
+      - url: "{gateway}"
+        description: The live gateway, at the origin of `connection.offer_url`.
+        variables:
+          gateway:
+            default: http://localhost:8790
+            description: The gateway's origin (local development default).
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    delete:
+      tags: [gateway]
+      operationId: hangUpLiveSession
+      summary: Hang up
+      description: |
+        DELETE `connection.session_url` with the token (valid until `token_connect_by` plus `max_duration_s` plus
+        30 s). The `200` comes once the session has ended `client_closed`: the results channel drained (up to 250 ms),
+        the engine closed and the final usage report sent (up to 5 attempts), so it can take about 35 s at worst when
+        fenon-api is slow.
+      security: [{sessionToken: []}]
+      responses:
+        "200":
+          description: The session has ended.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                additionalProperties: false
+                properties:
+                  status: {const: ended}
+        "401":
+          description: "`invalid_token`."
+          headers:
+            WWW-Authenticate: {$ref: "#/components/headers/WwwAuthenticate"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/InvalidTokenError"}
+        "404":
+          description: "`not_found`: the session has no connection on this gateway."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ErrorResponse"}
+  /healthz:
+    servers:
+      - url: "{gateway}"
+        description: The live gateway, at the origin of `connection.offer_url`.
+        variables:
+          gateway:
+            default: http://localhost:8790
+            description: The gateway's origin (local development default).
+    get:
+      tags: [gateway]
+      operationId: gatewayHealth
+      summary: The gateway's own probe
+      responses:
+        "200":
+          description: Serving.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/GatewayHealth"}
+        "503":
+          description: Draining for a restart; new offers are refused.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/GatewayHealth"}
+  /console/workspaces/{workspace}/projects/{project}/dashboard:
+    parameters:
+      - $ref: "#/components/parameters/Workspace"
+      - $ref: "#/components/parameters/Project"
+    get:
+      tags: [console]
+      operationId: getProjectDashboard
+      summary: A project's Overview data (provisional)
+      security: [{consoleJwt: []}]
+      responses:
+        "200":
+          description: The five most recent live sessions and the usage recorded since the start of the UTC month.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ProjectDashboard"}
+        "401": {$ref: "#/components/responses/InvalidToken"}
+        "404": {$ref: "#/components/responses/ProjectNotFound"}
+        "500": {$ref: "#/components/responses/InternalError"}
+        "503": {$ref: "#/components/responses/ConsoleKeysUnavailable"}
+  /console/workspaces/{workspace}/projects/{project}/usage:
+    parameters:
+      - $ref: "#/components/parameters/Workspace"
+      - $ref: "#/components/parameters/Project"
+    get:
+      tags: [console]
+      operationId: getProjectUsage
+      summary: A project's usage for a period (provisional)
+      security: [{consoleJwt: []}]
+      parameters:
+        - name: from
+          in: query
+          description: First UTC day, inclusive. Default the first day of the current UTC month.
+          schema: {type: string, format: date}
+        - name: to
+          in: query
+          description: Last UTC day, exclusive. Default one month after `from`'s month starts. Must be after `from`.
+          schema: {type: string, format: date}
+      responses:
+        "200":
+          description: Totals per model and unit, and up to 100 records, newest first.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ProjectUsage"}
+        "400":
+          description: "`invalid_request`: `details.field` is `from` or `to`."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/InvalidRequestError"}
+        "401": {$ref: "#/components/responses/InvalidToken"}
+        "404": {$ref: "#/components/responses/ProjectNotFound"}
+        "500": {$ref: "#/components/responses/InternalError"}
+        "503": {$ref: "#/components/responses/ConsoleKeysUnavailable"}
+  /console/playground/samples:
+    get:
+      tags: [console]
+      operationId: listPlaygroundSamples
+      summary: The Playground's sample clips (illustrative)
+      security: [{consoleJwt: []}]
+      responses:
+        "200":
+          description: The sample clips, with their media on fenon-api's public origin.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/PlaygroundSamples"}
+        "401": {$ref: "#/components/responses/InvalidToken"}
+        "500": {$ref: "#/components/responses/InternalError"}
+        "503": {$ref: "#/components/responses/ConsoleKeysUnavailable"}
+  /console/playground/samples/{clip_id}/annotations:
+    parameters:
+      - $ref: "#/components/parameters/ClipId"
+    get:
+      tags: [console]
+      operationId: getPlaygroundSampleAnnotations
+      summary: A sample clip's per-frame results for a range (illustrative)
+      description: |
+        One `PlaygroundAnnotationRow` per frame from `start_s` up to, not including, `end_s`, as JSON Lines. The rows
+        are illustrative, not model output.
+      security: [{consoleJwt: []}]
+      parameters:
+        - name: start_s
+          in: query
+          required: true
+          description: Seconds into the clip, 0 or more.
+          schema: {type: number, minimum: 0}
+        - name: end_s
+          in: query
+          required: true
+          description: Seconds into the clip, after `start_s` and at most the clip's length.
+          schema: {type: number, exclusiveMinimum: 0}
+      responses:
+        "200":
+          description: JSON Lines, one `PlaygroundAnnotationRow` per line.
+          content:
+            application/x-ndjson:
+              schema: {$ref: "#/components/schemas/PlaygroundAnnotationRow"}
+        "400":
+          description: "`invalid_request`: `details.field` is `start_s` or `end_s`."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/InvalidRequestError"}
+        "401": {$ref: "#/components/responses/InvalidToken"}
+        "404": {$ref: "#/components/responses/SampleNotFound"}
+        "500": {$ref: "#/components/responses/InternalError"}
+        "503": {$ref: "#/components/responses/ConsoleKeysUnavailable"}
+  /console/workspaces/{workspace}/projects/{project}/playground/runs:
+    parameters:
+      - $ref: "#/components/parameters/Workspace"
+      - $ref: "#/components/parameters/Project"
+    post:
+      tags: [console]
+      operationId: createPlaygroundRun
+      summary: Run the model on a sample clip's range (illustrative)
+      description: |
+        Completes at once: usage counts the range's frames, and the outputs are the processed clip and the range's
+        annotations. Nothing runs and nothing is stored. Checked in order: the token, membership, then the body. Besides
+        the usual body checks, `422 input_invalid` names `/clip_id` for an unknown clip, `/range/end_s` for a range past
+        the clip's end, and `/range` for a preview over 10 s or a full run over 60 s.
+      security: [{consoleJwt: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/PlaygroundRunRequest"}
+      responses:
+        "201":
+          description: A completed run.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/PlaygroundRun"}
+        "400": {$ref: "#/components/responses/InvalidJson"}
+        "401": {$ref: "#/components/responses/InvalidToken"}
+        "404": {$ref: "#/components/responses/ProjectNotFound"}
+        "413": {$ref: "#/components/responses/RequestTooLarge"}
+        "415": {$ref: "#/components/responses/UnsupportedMediaType"}
+        "422": {$ref: "#/components/responses/InputInvalid"}
+        "500": {$ref: "#/components/responses/InternalError"}
+        "503": {$ref: "#/components/responses/ConsoleKeysUnavailable"}
+  /internal/live/sessions/{session_id}/connection:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      tags: [internal]
+      operationId: claimLiveConnection
+      summary: The gateway claims a session's one connection
+      description: |
+        Called by the gateway after it has accepted a client's offer and before it answers it. The first claim for a
+        session wins; its `connection_id` goes in every checkpoint from that connection. Checks, in order: live
+        sessions available (501), the gateway secret, the session.
+      security: [{gatewaySecret: []}]
+      responses:
+        "201":
+          description: Claimed.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ConnectionClaim"}
+        "401": {$ref: "#/components/responses/InvalidSecret"}
+        "404":
+          description: "`not_found`: no such session."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ErrorResponse"}
+        "409":
+          description: "`already_connected` (another connection holds the session) or `session_ended`."
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ErrorResponse"
+                  - properties:
+                      error:
+                        properties:
+                          code: {enum: [already_connected, session_ended]}
+        "500": {$ref: "#/components/responses/InternalError"}
+        "501": {$ref: "#/components/responses/NotImplemented"}
+  /internal/live/checkpoints:
+    post:
+      tags: [internal]
+      operationId: recordCheckpoint
+      summary: The gateway reports a session's usage
+      description: |
+        The gateway sends the session's cumulative usage facts every 5 s while it holds the session and once at the
+        end (`final: true`), from the connection it claimed (`connection_id`) and numbering its reports with `seq`
+        from 0. A report is applied only if it comes from the session's connection, its `seq` is higher than the last
+        applied one and the usage isn't final yet, so repeated, late, post-final and other connections' reports
+        change nothing. The first applied report with `connected_at` makes the session `live`; the final one ends it with
+        `end_reason` (`failed` if null). The gateway retries only the final report (5 attempts). Checks, in order:
+        live sessions available (501), the gateway secret, the body.
+      security: [{gatewaySecret: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/Checkpoint"}
+      responses:
+        "200":
+          description: "`end` is set once the session has ended (deleted, or settled): the gateway must stop it."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CheckpointReply"}
+        "400": {$ref: "#/components/responses/InvalidJson"}
+        "401": {$ref: "#/components/responses/InvalidSecret"}
+        "404":
+          description: "`not_found`: no such session, or the report isn't from the session's connection. The gateway ends that connection `failed`."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ErrorResponse"}
+        "413": {$ref: "#/components/responses/RequestTooLarge"}
+        "415": {$ref: "#/components/responses/UnsupportedMediaType"}
+        "422": {$ref: "#/components/responses/InputInvalid"}
+        "500": {$ref: "#/components/responses/InternalError"}
+        "501": {$ref: "#/components/responses/NotImplemented"}
+  /internal/maintenance:
+    get:
+      tags: [internal]
+      operationId: runMaintenance
+      summary: The scheduled maintenance job
+      description: |
+        Settles live sessions whose end or final usage the gateway didn't report (the rules reads apply), then
+        deletes idempotency records past their 24 h and rate-limit windows older than an hour. Every step is
+        idempotent: running it twice, late or more often only settles sooner. `501` until `CRON_SECRET` is set.
+      security: [{cronSecret: []}]
+      responses:
+        "200":
+          description: What was settled and removed.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/MaintenanceReport"}
+        "401": {$ref: "#/components/responses/InvalidSecret"}
+        "500": {$ref: "#/components/responses/InternalError"}
+        "501": {$ref: "#/components/responses/NotImplemented"}
+  /samples/{file_name}:
+    parameters:
+      - name: file_name
+        in: path
+        required: true
+        description: A file named by `PlaygroundSamples` (`video_url`, `poster_url`) or a run's `outputs.video.url`.
+        schema: {type: string, examples: [hand-gestures.mp4]}
+    get:
+      tags: [samples]
+      operationId: getSampleFile
+      summary: A sample clip or poster
+      description: Public. Byte ranges (`Range`) are answered with `206`, so players can seek.
+      responses:
+        "200":
+          description: The whole file.
+          content:
+            video/mp4:
+              schema: {type: string, contentMediaType: video/mp4}
+            image/jpeg:
+              schema: {type: string, contentMediaType: image/jpeg}
+        "206":
+          description: The requested byte range, with `Content-Range`.
+          content:
+            video/mp4:
+              schema: {type: string, contentMediaType: video/mp4}
+            image/jpeg:
+              schema: {type: string, contentMediaType: image/jpeg}
+        "404": {$ref: "#/components/responses/SampleNotFound"}
+        "416":
+          description: The requested range lies outside the file.
+  /health:
+    get:
+      tags: [health]
+      operationId: health
+      summary: Liveness
+      description: The process answers; nothing else is checked.
+      responses:
+        "200":
+          description: Alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                additionalProperties: false
+                properties:
+                  status: {const: ok}
+  /ready:
+    get:
+      tags: [health]
+      operationId: ready
+      summary: Readiness
+      description: The database answered within 2 s.
+      responses:
+        "200":
+          description: Ready to serve.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                additionalProperties: false
+                properties:
+                  status: {const: ready}
+        "503":
+          description: "`unavailable`: the database isn't reachable. Retry after `Retry-After`."
+          headers:
+            Retry-After: {$ref: "#/components/headers/RetryAfter"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/UnavailableError"}
+components:
+  securitySchemes:
+    apiKey:
+      type: http
+      scheme: bearer
+      description: "A project API key from the console: `Authorization: Bearer fenon_…`."
+    sessionToken:
+      type: http
+      scheme: bearer
+      description: "`connection.token` from creating the session. Opaque: don't parse it."
+    consoleJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        A JWT from the console's Better Auth `jwt` plugin: EdDSA, issuer the console's URL, audience `fenon-api`,
+        15 minutes. fenon-api verifies it against the console's JWKS (`{console}/api/auth/jwks`).
+    gatewaySecret:
+      type: http
+      scheme: bearer
+      description: The shared gateway secret (current or previous during a rotation).
+    cronSecret:
+      type: http
+      scheme: bearer
+      description: "`CRON_SECRET`."
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: {type: string, pattern: "^[A-Za-z0-9_-]{1,64}$"}
+    SessionId:
+      name: session_id
+      in: path
+      required: true
+      schema: {type: string, examples: [ls_7k2mq9x4ab3d]}
+    RunId:
+      name: run_id
+      in: path
+      required: true
+      schema: {type: string, examples: [run_7k2mq9x4ab3d]}
+    Workspace:
+      name: workspace
+      in: path
+      required: true
+      description: The workspace's public ID.
+      schema: {type: string, examples: [ws_7k2mq9x4ab3d]}
+    Project:
+      name: project
+      in: path
+      required: true
+      description: The project's public ID.
+      schema: {type: string, examples: [proj_7k2mq9x4ab3d]}
+    ClipId:
+      name: clip_id
+      in: path
+      required: true
+      description: A sample clip's ID from `PlaygroundSamples`.
+      schema: {type: string, examples: [hand-gestures]}
+  headers:
+    RetryAfter:
+      description: Seconds to wait before retrying, rounded up.
+      schema: {type: string, pattern: "^[0-9]+$"}
+    WwwAuthenticate:
+      schema: {const: Bearer}
+  responses:
+    InvalidApiKey:
+      description: |
+        `invalid_api_key`: missing, unknown, disabled, expired or out of uses, or not tied to a project. Every case
+        answers the same.
+      headers:
+        WWW-Authenticate: {$ref: "#/components/headers/WwwAuthenticate"}
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ErrorResponse"
+              - properties:
+                  error:
+                    properties:
+                      code: {const: invalid_api_key}
+    InvalidSecret:
+      description: "`invalid_api_key`: the bearer secret is missing or wrong."
+      headers:
+        WWW-Authenticate: {$ref: "#/components/headers/WwwAuthenticate"}
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ErrorResponse"
+              - properties:
+                  error:
+                    properties:
+                      code: {const: invalid_api_key}
+    InvalidToken:
+      description: "`invalid_token`: the JWT is missing or doesn't verify (signature, issuer, audience, expiry)."
+      headers:
+        WWW-Authenticate: {$ref: "#/components/headers/WwwAuthenticate"}
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/InvalidTokenError"}
+    ConsoleKeysUnavailable:
+      description: "`unavailable`: the console's JWKS couldn't be fetched to check the token. Retry after `Retry-After`."
+      headers:
+        Retry-After: {$ref: "#/components/headers/RetryAfter"}
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/UnavailableError"}
+    SessionNotFound:
+      description: "`not_found`: no such session in this key's project."
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ErrorResponse"
+              - properties:
+                  error:
+                    properties:
+                      code: {const: not_found}
+    RunNotFound:
+      description: "`not_found`: no such run in this key's project."
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ErrorResponse"
+              - properties:
+                  error:
+                    properties:
+                      code: {const: not_found}
+    ProjectNotFound:
+      description: "`not_found`: no such workspace or project, or the user isn't a member."
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ErrorResponse"
+              - properties:
+                  error:
+                    properties:
+                      code: {const: not_found}
+    SampleNotFound:
+      description: "`not_found`: no such sample clip or file."
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ErrorResponse"
+              - properties:
+                  error:
+                    properties:
+                      code: {const: not_found}
+    NotImplemented:
+      description: "`not_implemented`: this part isn't available on this deployment; `details.part` names it."
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ErrorResponse"
+              - properties:
+                  error:
+                    properties:
+                      code: {const: not_implemented}
+                      details:
+                        type: object
+                        required: [part]
+                        additionalProperties: false
+                        properties:
+                          part: {enum: [live_sessions, maintenance, recorded_runs]}
+    RateLimited:
+      description: "`rate_limited`: over this key's limit; `details` holds `limit` and `window_s`. Retry after `Retry-After`."
+      headers:
+        Retry-After: {$ref: "#/components/headers/RetryAfter"}
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ErrorResponse"
+              - properties:
+                  error:
+                    properties:
+                      code: {const: rate_limited}
+                      retryable: {const: true}
+                      details:
+                        type: object
+                        required: [limit, window_s]
+                        additionalProperties: false
+                        properties:
+                          limit: {type: integer, minimum: 1}
+                          window_s: {type: integer, minimum: 1}
+    InvalidJson:
+      description: "`invalid_request`: the body isn't valid JSON."
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/InvalidRequestError"}
+    InvalidJsonOrIdempotencyKey:
+      description: |
+        `invalid_request`: the body isn't valid JSON, or the `Idempotency-Key` header is missing or malformed
+        (`details.header` is `Idempotency-Key`).
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/InvalidRequestError"}
+    RequestTooLarge:
+      description: "`request_too_large`: the body is over 1 MB."
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ErrorResponse"
+              - properties:
+                  error:
+                    properties:
+                      code: {const: request_too_large}
+    UnsupportedMediaType:
+      description: "`unsupported_media_type`: send the body as `application/json`."
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ErrorResponse"
+              - properties:
+                  error:
+                    properties:
+                      code: {const: unsupported_media_type}
+    InputInvalid:
+      description: "`input_invalid`: `details.field` is the JSON Pointer of the first invalid field."
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ErrorResponse"
+              - properties:
+                  error:
+                    properties:
+                      code: {const: input_invalid}
+                      details:
+                        type: object
+                        required: [field]
+                        additionalProperties: false
+                        properties:
+                          field: {type: string, pattern: "^(/[^/]*)+$"}
+    InternalError:
+      description: "`internal_error`: an unexpected failure, logged with the request ID. Retryable."
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ErrorResponse"
+              - properties:
+                  error:
+                    properties:
+                      code: {const: internal_error}
+                      retryable: {const: true}
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: object
+          required: [code, message, fix, retryable, retry_after_s, details, request_id]
+          additionalProperties: false
+          properties:
+            code: {type: string}
+            message: {type: string}
+            fix: {type: [string, "null"]}
+            retryable: {type: boolean}
+            retry_after_s: {type: [number, "null"], minimum: 0}
+            details: {type: object}
+            request_id: {type: string, pattern: "^req_[0-9a-z]{12}$"}
+    InvalidRequestError:
+      allOf:
+        - $ref: "#/components/schemas/ErrorResponse"
+        - properties:
+            error:
+              properties:
+                code: {const: invalid_request}
+                details:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    field: {type: string}
+                    header: {type: string}
+    InvalidTokenError:
+      allOf:
+        - $ref: "#/components/schemas/ErrorResponse"
+        - properties:
+            error:
+              properties:
+                code: {const: invalid_token}
+    UnavailableError:
+      allOf:
+        - $ref: "#/components/schemas/ErrorResponse"
+        - properties:
+            error:
+              properties:
+                code: {const: unavailable}
+                retryable: {const: true}
+    Timestamp:
+      type: string
+      pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+      examples: ["2026-10-31T12:00:00.000Z"]
+    LiveSessionId:
+      type: string
+      pattern: "^ls_[0-9a-hjkmnp-tv-z]{12}$"
+    LiveSessionStatus:
+      enum: [waiting_for_media, live, ended]
+    LiveEndReason:
+      enum: [client_closed, deleted, idle_timeout, max_duration, never_connected, gateway_lost, failed, server_shutdown, unsupported_stream]
+    LiveModel:
+      type: string
+      minLength: 1
+      maxLength: 200
+      description: "A live model. Today: `fenon/hand-pose-hm`. Its result `data` follows `x-model-data-schemas`."
+    CreateLiveSessionRequest:
+      type: object
+      required: [model]
+      additionalProperties: false
+      properties:
+        model: {$ref: "#/components/schemas/LiveModel"}
+        max_duration_s:
+          type: integer
+          minimum: 10
+          maximum: 3600
+          default: 600
+          description: The session ends `max_duration` after this many seconds of connected time.
+    Usage:
+      type: object
+      required: [unit, quantity, final]
+      additionalProperties: false
+      properties:
+        unit: {const: second}
+        quantity: {type: integer, minimum: 0}
+        final: {type: boolean, description: "True once the quantity will no longer change."}
+    LiveSession:
+      allOf:
+        - $ref: "#/components/schemas/LiveSessionFields"
+      unevaluatedProperties: false
+    LiveSessionFields:
+      type: object
+      required: [id, object, model, status, end_reason, max_duration_s, idle_timeout_s, usage, created_at, connected_at, ended_at]
+      properties:
+        id: {$ref: "#/components/schemas/LiveSessionId"}
+        object: {const: live_session}
+        model: {$ref: "#/components/schemas/LiveModel"}
+        status: {$ref: "#/components/schemas/LiveSessionStatus"}
+        end_reason:
+          oneOf:
+            - $ref: "#/components/schemas/LiveEndReason"
+            - type: "null"
+        max_duration_s: {type: integer, minimum: 10, maximum: 3600}
+        idle_timeout_s: {type: integer, minimum: 1, description: "The session ends `idle_timeout` after this long without media. Today 15."}
+        usage: {$ref: "#/components/schemas/Usage"}
+        created_at: {$ref: "#/components/schemas/Timestamp"}
+        connected_at:
+          oneOf:
+            - $ref: "#/components/schemas/Timestamp"
+            - type: "null"
+        ended_at:
+          oneOf:
+            - $ref: "#/components/schemas/Timestamp"
+            - type: "null"
+    IceServer:
+      type: object
+      required: [urls]
+      additionalProperties: false
+      properties:
+        urls:
+          oneOf:
+            - type: string
+            - type: array
+              items: {type: string}
+              minItems: 1
+        username: {type: string}
+        credential: {type: string}
+    Connection:
+      type: object
+      required: [transport, offer_url, session_url, results_channel, token, token_connect_by, ice_servers]
+      additionalProperties: false
+      description: |
+        How to reach the gateway for this session. `token` authenticates the offer until `token_connect_by` (60 s
+        after creation) and the hang-up until `token_connect_by` plus `max_duration_s` plus 30 s. `ice_servers` are
+        Cloudflare's STUN server, plus TURN relays with credentials valid for the same span when the deployment has
+        them; they are secrets.
+      properties:
+        transport: {const: webrtc}
+        offer_url: {type: string, format: uri}
+        session_url: {type: string, format: uri}
+        results_channel: {const: results}
+        token: {type: string, minLength: 1}
+        token_connect_by: {$ref: "#/components/schemas/Timestamp"}
+        ice_servers:
+          type: array
+          items: {$ref: "#/components/schemas/IceServer"}
+    CreatedLiveSession:
+      allOf:
+        - $ref: "#/components/schemas/LiveSessionFields"
+        - type: object
+          required: [connection]
+          properties:
+            connection:
+              oneOf:
+                - $ref: "#/components/schemas/Connection"
+                - type: "null"
+      unevaluatedProperties: false
+    LiveSessionList:
+      type: object
+      required: [data, next_cursor]
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          items: {$ref: "#/components/schemas/LiveSession"}
+          maxItems: 100
+        next_cursor:
+          type: [string, "null"]
+          description: Pass as `after` for the next page; null on the last page.
+    UploadId: {type: string, pattern: "^upl_[0-9a-hjkmnp-tv-z]{12}$"}
+    RunId: {type: string, pattern: "^run_[0-9a-hjkmnp-tv-z]{12}$"}
+    CreateUploadRequest:
+      type: object
+      required: [filename, content_type, size_bytes]
+      additionalProperties: false
+      properties:
+        filename: {type: string, minLength: 1, maxLength: 255, description: "Shown in the run's `input_files`; never used to store the file."}
+        content_type: {enum: [video/mp4, video/quicktime]}
+        size_bytes: {type: integer, minimum: 1, maximum: 4294967296}
+    UploadReservation:
+      type: object
+      required: [id, status, upload_url, method, headers, expires_at]
+      additionalProperties: false
+      properties:
+        id: {$ref: "#/components/schemas/UploadId"}
+        status: {const: pending}
+        upload_url: {type: string, format: uri, description: "A presigned link into the object store. Send no Authorization header."}
+        method: {const: PUT}
+        headers:
+          type: object
+          additionalProperties: {type: string}
+          description: Send exactly these with the PUT (`Content-Type`, `Content-Length`).
+        expires_at: {$ref: "#/components/schemas/Timestamp"}
+    CreateRunRequest:
+      type: object
+      required: [model, input]
+      additionalProperties: false
+      properties:
+        model: {type: string, minLength: 1, maxLength: 200, description: "A recorded model (`x-model-contracts`). Today: `fenon/hand-pose-hm`."}
+        input:
+          type: object
+          description: |
+            The model contract's input. For `fenon/hand-pose-hm` (`fenon.hand_pose.video` 1.1.0): `{"video": <upload ID>}`;
+            its `range` is refused until the model engine can process part of a video.
+        outputs:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: {type: string}
+          description: |
+            The outputs to produce, from the model's own (`annotations` and `video` for `fenon/hand-pose-hm`); must include
+            the one it always produces (`annotations`). Default: that one alone.
+    RunStatus:
+      enum: [queued, processing_frames, succeeded, failed, canceled]
+    ContractRef:
+      type: object
+      required: [id, version, schema_sha256]
+      additionalProperties: false
+      properties:
+        id: {type: string, examples: [fenon.hand_pose.video]}
+        version: {type: string, pattern: "^[0-9]+\\.[0-9]+\\.[0-9]+$"}
+        schema_sha256: {type: string, pattern: "^[0-9a-f]{64}$"}
+    RunProgress:
+      type: object
+      required: [completed, total, unit]
+      additionalProperties: false
+      properties:
+        completed: {type: integer, minimum: 0}
+        total: {type: integer, minimum: 0}
+        unit: {const: frame}
+    RunUsage:
+      type: object
+      required: [unit, quantity]
+      additionalProperties: false
+      properties:
+        unit: {type: string, examples: [frame]}
+        quantity: {type: integer, minimum: 0}
+    OutputFile:
+      type: object
+      required: [content_type, url, url_expires_at, size_bytes]
+      additionalProperties: false
+      properties:
+        content_type: {type: string}
+        url: {type: string, format: uri, description: "A presigned download link. Send no Authorization header."}
+        url_expires_at: {$ref: "#/components/schemas/Timestamp"}
+        size_bytes: {type: integer, minimum: 0}
+    RunError:
+      type: object
+      required: [code, message, fix, retryable, retry_after_s, details, stage]
+      additionalProperties: false
+      properties:
+        code: {enum: [input_unreadable, processing_failed, deadline_exceeded, canceled]}
+        message: {type: string}
+        fix: {type: [string, "null"]}
+        retryable: {type: boolean}
+        retry_after_s: {type: [number, "null"]}
+        details: {type: object}
+        stage: {enum: [queued, processing_frames], description: The status the run was in when it stopped.}
+    Run:
+      type: object
+      required: [id, object, model, model_version, contract, status, input, input_files, outputs_requested, progress, usage_estimate, outputs, outputs_expire_at, outputs_expired, result, usage, error, created_at, started_at, finished_at]
+      additionalProperties: false
+      properties:
+        id: {$ref: "#/components/schemas/RunId"}
+        object: {const: run}
+        model: {type: string}
+        model_version: {type: [string, "null"], description: "The version the model engine ran; null until the run succeeds."}
+        contract: {$ref: "#/components/schemas/ContractRef"}
+        status: {$ref: "#/components/schemas/RunStatus"}
+        input: {type: object, description: The input as sent.}
+        input_files:
+          type: object
+          description: The upload the input names, under the input field that names it.
+          additionalProperties:
+            type: object
+            required: [id, filename, size_bytes]
+            additionalProperties: false
+            properties:
+              id: {$ref: "#/components/schemas/UploadId"}
+              filename: {type: string}
+              size_bytes: {type: integer, minimum: 1}
+        outputs_requested: {type: array, items: {type: string}}
+        progress:
+          oneOf:
+            - $ref: "#/components/schemas/RunProgress"
+            - type: "null"
+        usage_estimate:
+          oneOf:
+            - $ref: "#/components/schemas/RunUsage"
+            - type: "null"
+        outputs:
+          oneOf:
+            - type: object
+              additionalProperties: {$ref: "#/components/schemas/OutputFile"}
+            - type: "null"
+        outputs_expire_at:
+          oneOf:
+            - $ref: "#/components/schemas/Timestamp"
+            - type: "null"
+        outputs_expired: {type: boolean}
+        result:
+          oneOf:
+            - type: object
+              description: The model contract's result.
+            - type: "null"
+        usage:
+          oneOf:
+            - $ref: "#/components/schemas/RunUsage"
+            - type: "null"
+        error:
+          oneOf:
+            - $ref: "#/components/schemas/RunError"
+            - type: "null"
+        created_at: {$ref: "#/components/schemas/Timestamp"}
+        started_at:
+          oneOf:
+            - $ref: "#/components/schemas/Timestamp"
+            - type: "null"
+        finished_at:
+          oneOf:
+            - $ref: "#/components/schemas/Timestamp"
+            - type: "null"
+    RunList:
+      type: object
+      required: [data, next_cursor]
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          items: {$ref: "#/components/schemas/Run"}
+        next_cursor: {type: [string, "null"]}
+    ResultsChannelMessage:
+      description: A message on the `results` data channel, as JSON text.
+      oneOf:
+        - $ref: "#/components/schemas/ResultMessage"
+        - $ref: "#/components/schemas/GapMessage"
+        - $ref: "#/components/schemas/EndMessage"
+      discriminator:
+        propertyName: type
+        mapping:
+          result: "#/components/schemas/ResultMessage"
+          gap: "#/components/schemas/GapMessage"
+          end: "#/components/schemas/EndMessage"
+    ResultMessage:
+      type: object
+      required: [type, frame_id, rtp_timestamp, media_time_90k, frame_width, frame_height, received_at_ms, sent_at_ms, data]
+      additionalProperties: false
+      properties:
+        type: {const: result}
+        frame_id: {type: integer, minimum: 0, description: "The gateway's number for the frame, from 0."}
+        rtp_timestamp: {type: integer, minimum: 0, maximum: 4294967295, description: The frame's RTP timestamp as sent.}
+        media_time_90k: {type: integer, minimum: 0, description: "90 kHz ticks since the first complete frame the gateway assembled."}
+        frame_width: {type: integer, minimum: 1, description: "Width of the frame `data`'s pixel coordinates refer to."}
+        frame_height: {type: integer, minimum: 1}
+        received_at_ms: {type: integer, description: "When the gateway received the frame, Unix milliseconds on its clock."}
+        sent_at_ms: {type: integer, description: "When the gateway sent this message, Unix milliseconds on its clock."}
+        data:
+          type: object
+          description: "The model's output for the frame; its schema is the session model's in `x-model-data-schemas`."
+    GapMessage:
+      type: object
+      required: [type, reason, after_frame_id]
+      additionalProperties: false
+      description: |
+        Results stalled for an abnormal reason (never for ordinary sampling). `frame_too_large`: a frame passed 2048
+        packets and was dropped; lower the sender's bitrate.
+      properties:
+        type: {const: gap}
+        reason: {enum: [packet_loss, keyframe_wait, engine_restart, frame_too_large]}
+        after_frame_id: {type: [integer, "null"], minimum: 0}
+    EndMessage:
+      type: object
+      required: [type, reason, connected_ms]
+      additionalProperties: false
+      description: The session ended. Best effort; the session's `end_reason` from the API is the record.
+      properties:
+        type: {const: end}
+        reason: {$ref: "#/components/schemas/LiveEndReason"}
+        connected_ms: {type: integer, minimum: 0}
+    GatewayHealth:
+      type: object
+      required: [status, sessions]
+      additionalProperties: false
+      properties:
+        status: {enum: [ok, draining]}
+        sessions: {type: integer, minimum: 0}
+    UsageFacts:
+      type: object
+      required: [frames_received, frames_forwarded, frames_dropped, results_sent, connected_ms, engine_ms]
+      additionalProperties: false
+      description: Cumulative counters for the session so far.
+      properties:
+        frames_received: {type: integer, minimum: 0}
+        frames_forwarded: {type: integer, minimum: 0}
+        frames_dropped: {type: integer, minimum: 0}
+        results_sent: {type: integer, minimum: 0}
+        connected_ms: {type: integer, minimum: 0}
+        engine_ms: {type: integer, minimum: 0}
+    Checkpoint:
+      type: object
+      required: [session_id, connection_id, seq, connected_at, final, end_reason, facts]
+      additionalProperties: false
+      properties:
+        session_id: {type: string, minLength: 1}
+        connection_id: {type: string, minLength: 1, description: "From `claimLiveConnection`."}
+        seq: {type: integer, minimum: 0}
+        connected_at:
+          description: When the media connected (ISO 8601 UTC with `Z`, any fraction), or null before it has.
+          type: [string, "null"]
+          pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+        final: {type: boolean}
+        end_reason:
+          oneOf:
+            - $ref: "#/components/schemas/LiveEndReason"
+            - type: "null"
+        facts: {$ref: "#/components/schemas/UsageFacts"}
+    ConnectionClaim:
+      type: object
+      required: [connection_id]
+      additionalProperties: false
+      properties:
+        connection_id: {type: string, minLength: 1}
+    CheckpointReply:
+      type: object
+      required: [end]
+      additionalProperties: false
+      properties:
+        end:
+          oneOf:
+            - $ref: "#/components/schemas/LiveEndReason"
+            - type: "null"
+    MaintenanceReport:
+      type: object
+      required: [settled, removed]
+      additionalProperties: false
+      properties:
+        settled:
+          type: object
+          required: [sessions_ended, usage_finalized, runs_failed]
+          additionalProperties: false
+          properties:
+            sessions_ended: {type: integer, minimum: 0}
+            usage_finalized: {type: integer, minimum: 0}
+            runs_failed: {type: integer, minimum: 0, description: Recorded runs failed for passing their deadline.}
+        removed:
+          type: object
+          required: [idempotency_records, rate_limit_windows, run_outputs, uploads]
+          additionalProperties: false
+          properties:
+            idempotency_records: {type: integer, minimum: 0}
+            rate_limit_windows: {type: integer, minimum: 0}
+            run_outputs: {type: integer, minimum: 0, description: Runs whose expired outputs were deleted.}
+            uploads: {type: integer, minimum: 0, description: Uploads deleted (their run is final, or no run used them).}
+    ProjectDashboard:
+      type: object
+      required: [recent_sessions, usage_this_month, provisional]
+      additionalProperties: false
+      properties:
+        recent_sessions:
+          type: array
+          items: {$ref: "#/components/schemas/LiveSession"}
+          maxItems: 5
+        usage_this_month:
+          type: object
+          required: [unit, quantity]
+          additionalProperties: false
+          properties:
+            unit: {const: second}
+            quantity: {type: integer, minimum: 0}
+        provisional: {const: true}
+    ProjectUsage:
+      type: object
+      required: [from, to, totals, records, provisional]
+      additionalProperties: false
+      properties:
+        from: {type: string, format: date}
+        to: {type: string, format: date}
+        totals:
+          type: array
+          items:
+            type: object
+            required: [model, unit, quantity, sessions]
+            additionalProperties: false
+            properties:
+              model: {type: string}
+              unit: {type: string}
+              quantity: {type: integer, minimum: 0}
+              sessions: {type: integer, minimum: 1}
+        records:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            required: [source_type, source_id, model, unit, quantity, final, created_at]
+            additionalProperties: false
+            properties:
+              source_type: {const: live_session}
+              source_id: {type: string}
+              model: {type: string}
+              unit: {type: string}
+              quantity: {type: integer, minimum: 0}
+              final: {type: boolean}
+              created_at: {$ref: "#/components/schemas/Timestamp"}
+        provisional: {const: true}
+    PlaygroundSamples:
+      type: object
+      required: [data, illustrative]
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          items:
+            type: object
+            required: [id, name, width, height, fps, frame_count, duration_s, video_url, poster_url]
+            additionalProperties: false
+            properties:
+              id: {type: string, examples: [hand-gestures]}
+              name: {type: string}
+              width: {type: integer, minimum: 1}
+              height: {type: integer, minimum: 1}
+              fps: {type: integer, minimum: 1}
+              frame_count: {type: integer, minimum: 1}
+              duration_s: {type: number, exclusiveMinimum: 0}
+              video_url: {type: string, format: uri, description: The original clip.}
+              poster_url: {type: string, format: uri, description: The clip's first frame.}
+        illustrative: {const: true}
+    PlaygroundRange:
+      type: object
+      required: [start_s, end_s]
+      additionalProperties: false
+      description: Seconds into the clip; `end_s` is after `start_s`.
+      properties:
+        start_s: {type: number, minimum: 0}
+        end_s: {type: number, exclusiveMinimum: 0}
+    PlaygroundRunRequest:
+      type: object
+      required: [clip_id, mode, range]
+      additionalProperties: false
+      properties:
+        clip_id: {type: string, minLength: 1, maxLength: 64}
+        mode: {enum: [preview, recorded], description: "`preview` covers at most 10 s, `recorded` (a full run) at most 60 s."}
+        range: {$ref: "#/components/schemas/PlaygroundRange"}
+    PlaygroundRun:
+      type: object
+      required: [id, object, clip_id, mode, range, status, usage, outputs, illustrative]
+      additionalProperties: false
+      properties:
+        id: {type: string, pattern: "^run_[0-9a-hjkmnp-tv-z]{12}$"}
+        object: {const: playground_run}
+        clip_id: {type: string}
+        mode: {enum: [preview, recorded]}
+        range: {$ref: "#/components/schemas/PlaygroundRange"}
+        status: {const: succeeded}
+        usage:
+          type: object
+          required: [unit, quantity]
+          additionalProperties: false
+          properties:
+            unit: {const: frame}
+            quantity: {type: integer, minimum: 0, description: The frames in the range.}
+        outputs:
+          type: object
+          required: [video, annotations]
+          additionalProperties: false
+          properties:
+            video:
+              type: object
+              required: [content_type, url]
+              additionalProperties: false
+              description: The processed clip, the model's output drawn on the whole clip.
+              properties:
+                content_type: {const: video/mp4}
+                url: {type: string, format: uri}
+            annotations:
+              type: object
+              required: [content_type, url]
+              additionalProperties: false
+              description: The range's rows, from `getPlaygroundSampleAnnotations`.
+              properties:
+                content_type: {const: application/x-ndjson}
+                url: {type: string, format: uri}
+        illustrative: {const: true}
+    PlaygroundAnnotationRow:
+      type: object
+      required: [frame_index, timestamp_sec, image_size, hands]
+      additionalProperties: false
+      description: |
+        One frame, in the SDK's row shape (fenon.hand_pose.video 1.0.0 `row.schema.json`) trimmed to what the
+        Playground draws.
+      properties:
+        frame_index: {type: integer, minimum: 0}
+        timestamp_sec: {type: number, minimum: 0, description: frame_index / fps, to the millisecond.}
+        image_size:
+          type: object
+          required: [width, height]
+          additionalProperties: false
+          properties:
+            width: {type: integer, minimum: 1}
+            height: {type: integer, minimum: 1}
+        hands:
+          type: array
+          items:
+            type: object
+            required: [handedness, pixel_landmarks, bbox_xyxy]
+            additionalProperties: false
+            properties:
+              handedness: {enum: [left, right]}
+              pixel_landmarks:
+                type: array
+                description: 21 joints in the SDK's joint order, `[x, y]` in pixels, origin top-left.
+                minItems: 21
+                maxItems: 21
+                items: {type: array, items: {type: number}, minItems: 2, maxItems: 2}
+              bbox_xyxy:
+                type: array
+                items: {type: number}
+                minItems: 4
+                maxItems: 4
+x-model-data-schemas:
+  fenon/hand-pose-hm:
+    schema: models/fenon.hand_pose.live/0.1.0/data.schema.json
+    status: draft until the model engine's builders confirm it; don't depend on it before 1.0.0
+x-model-contracts:
+  fenon/hand-pose-hm:
+    contract: fenon.hand_pose.video
+    version: 1.1.0
+    schemas: models/fenon.hand_pose.video/1.1.0/

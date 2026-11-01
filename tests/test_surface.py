@@ -20,13 +20,17 @@ PUBLIC = {
     "Hand",
     "HandPoseFrame",
     "HandPoseJob",
+    "HandPoseLiveFrame",
+    "HandPoseLiveResult",
     "HandPoseResult",
     "InvalidInputError",
+    "LiveSessionError",
     "NetworkError",
     "NotFoundError",
     "RateLimitError",
     "RunFailedError",
     "ServerError",
+    "SessionLimitError",
     "UnsupportedModelError",
     "Usage",
     "__version__",
@@ -62,6 +66,7 @@ def test_hand_parameters_are_keyword_only_with_their_defaults() -> None:
         ("input", empty),
         ("mode", "recorded"),
         ("wait", True),
+        ("video", False),
     ]
 
 
@@ -84,8 +89,10 @@ def test_result_job_and_usage_expose_only_the_listed_members() -> None:
         "joint_order",
         "camera",
         "usage",
+        "outputs_expire_at",
         "frames",
         "save",
+        "save_video",
     }
     assert {name for name in dir(HandPoseJob) if not name.startswith("_")} == {
         "id",

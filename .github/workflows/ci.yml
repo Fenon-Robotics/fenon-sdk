@@ -22,7 +22,7 @@ jobs:
       - run: uv run --frozen ruff check .
       - run: uv run --frozen ruff format --check .
       - run: uv run --frozen pyright
-      - run: uv run --frozen python scripts/check_no_comments.py
+      - run: uv run --frozen python scripts/check_comment_rules.py
       - run: uv run --frozen python scripts/generate_types.py --check
 
   tests:

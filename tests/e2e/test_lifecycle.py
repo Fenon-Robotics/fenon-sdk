@@ -15,24 +15,22 @@ from _wire import Reply, Wire, WireRequest, json_reply
 from fenon._core._generated import Run
 from fenon._core.errors import RunFailedError, UnsupportedModelError
 from fenon._core.http import ClientConfig, HttpClients, open_http_clients
-from fenon._core.runs import ContractSupport, Job, create_run, fetch_output
+from fenon._core.runs import ContractSupport, Job, RunOutput, create_run
 from fenon._core.uploads import upload_file
 
 API_KEY = "fenon_e2e_key_0123456789"
-SUPPORT = ContractSupport("fenon.test.contract", 1, {"1.0.0": CONTRACT_SHA256})
+SUPPORT = ContractSupport("fenon.test.contract", {"1.0.0": CONTRACT_SHA256})
 RUN_PATH = f"/v1/runs/{RUN_ID}"
 CANCEL_PATH = f"/v1/runs/{RUN_ID}/cancel"
-SECOND_UPLOAD_ID = "upl_000000second"
+SECOND_UPLOAD_ID = "upl_000000sec0nd"
 POLL = {"Fenon-Poll-After-Ms": "250"}
 
 
 class OutputJob(Job[bytes]):
-    """A job whose result is the run's ``annotations`` output, fetched as slice 04 will fetch it."""
-
     _supported = (SUPPORT,)
 
     def _make_result(self, run: Run) -> bytes:
-        return fetch_output(self._clients, run, "annotations")
+        return RunOutput(self._clients, run, "annotations").content()
 
 
 @pytest.fixture
@@ -68,7 +66,7 @@ def video(tmp_path: Path) -> Path:
 
 
 def run_reply(status: str, poll: bool = True, **fields: object) -> Reply:
-    code = 202 if status == "preparing_input" else 200
+    code = 202 if status == "queued" else 200
     return json_reply(code, run_body(status, **fields), POLL if poll else None)
 
 
@@ -99,13 +97,13 @@ def test_upload_run_poll_and_output_over_real_sockets(
     )
     storage.route("PUT", "/bucket/first", (403, {}, b""))
     storage.route("PUT", "/bucket/second", (200, {}, b""))
-    api.route("POST", "/v1/runs", run_reply("preparing_input"))
+    api.route("POST", "/v1/runs", run_reply("queued"))
     api.route(
         "GET",
         RUN_PATH,
         run_reply("queued"),
         run_reply("processing_frames"),
-        run_reply("writing_results"),
+        run_reply("processing_frames"),
         succeeded_with(f"{storage.url}/out/first?X-Amz-Signature=o1"),
         succeeded_with(f"{storage.url}/out/fresh?X-Amz-Signature=o2"),
     )
@@ -115,7 +113,11 @@ def test_upload_run_poll_and_output_over_real_sockets(
     started = time.monotonic()
     upload_id = upload_file(clients, video, content_type="video/mp4")
     created = create_run(
-        clients, model="fenon/test-model", run_input={"video": upload_id}, supported=[SUPPORT]
+        clients,
+        model="fenon/test-model",
+        run_input={"video": upload_id},
+        outputs=["annotations"],
+        supported=[SUPPORT],
     )
     output = OutputJob(clients, created, cancel_on_interrupt=True).result()
     elapsed = time.monotonic() - started
@@ -131,6 +133,7 @@ def test_upload_run_poll_and_output_over_real_sockets(
     assert json.loads(api.received("POST", "/v1/runs")[0].body) == {
         "model": "fenon/test-model",
         "input": {"video": SECOND_UPLOAD_ID},
+        "outputs": ["annotations"],
     }
     assert len(api.received("GET", RUN_PATH)) == 5
     assert api.received("POST", CANCEL_PATH) == []
@@ -142,25 +145,23 @@ def test_upload_run_poll_and_output_over_real_sockets(
 
 
 def test_a_failed_run_raises_with_its_fields(api: Wire, clients: HttpClients) -> None:
-    api.route("POST", "/v1/runs", run_reply("preparing_input"))
+    api.route("POST", "/v1/runs", run_reply("queued"))
     api.route("GET", RUN_PATH, run_reply("queued"), run_reply("failed", poll=False))
-    job = OutputJob(clients, create_run(clients, model="m", run_input={}, supported=[SUPPORT]))
+    job = OutputJob(
+        clients, create_run(clients, model="m", run_input={}, outputs=["annotations"], supported=[SUPPORT])
+    )
     with pytest.raises(RunFailedError) as caught:
         job.result()
-    assert (caught.value.code, caught.value.stage, caught.value.frame) == (
-        "variable_frame_rate",
-        "preparing_input",
-        141,
-    )
+    assert (caught.value.code, caught.value.stage) == ("input_unreadable", "processing_frames")
     assert caught.value.job is job
 
 
 def test_an_unsupported_contract_is_cancelled_on_the_server(api: Wire, clients: HttpClients) -> None:
     other = {"id": "fenon.other.contract", "version": "1.0.0", "schema_sha256": "b" * 64}
-    api.route("POST", "/v1/runs", run_reply("preparing_input", contract=other))
+    api.route("POST", "/v1/runs", run_reply("queued", contract=other))
     api.route("POST", CANCEL_PATH, run_reply("canceled", poll=False, contract=other))
     with pytest.raises(UnsupportedModelError):
-        create_run(clients, model="m", run_input={}, supported=[SUPPORT])
+        create_run(clients, model="m", run_input={}, outputs=["annotations"], supported=[SUPPORT])
     cancels = api.received("POST", CANCEL_PATH)
     assert len(cancels) == 1
     assert cancels[0].headers["idempotency-key"]
@@ -175,11 +176,13 @@ def test_ctrl_c_while_waiting_sends_exactly_one_cancel(api: Wire, clients: HttpC
             _thread.interrupt_main()
         return run_reply("queued")
 
-    api.route("POST", "/v1/runs", run_reply("preparing_input"))
+    api.route("POST", "/v1/runs", run_reply("queued"))
     api.route("GET", RUN_PATH, poll)
     api.route("POST", CANCEL_PATH, run_reply("canceled", poll=False))
     job = OutputJob(
-        clients, create_run(clients, model="m", run_input={}, supported=[SUPPORT]), cancel_on_interrupt=True
+        clients,
+        create_run(clients, model="m", run_input={}, outputs=["annotations"], supported=[SUPPORT]),
+        cancel_on_interrupt=True,
     )
     with pytest.raises(KeyboardInterrupt):
         job.result()

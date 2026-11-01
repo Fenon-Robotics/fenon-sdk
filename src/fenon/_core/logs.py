@@ -1,4 +1,7 @@
-"""The ``fenon`` logger and the ``FENON_LOG`` switch that turns it on."""
+"""The ``fenon`` logger and the ``FENON_LOG`` switch that turns it on (docs/features/logging.md).
+
+``info`` or ``debug`` sends records to stderr; any other value leaves logging untouched.
+"""
 
 from __future__ import annotations
 
@@ -15,7 +18,6 @@ _ENV_HANDLER.setFormatter(logging.Formatter("[%(asctime)s %(name)s %(levelname)s
 
 
 def configure_logging(level: str | None) -> None:
-    """Send ``fenon`` records to stderr at ``info`` or ``debug``; any other value leaves logging untouched."""
     chosen = _LEVELS.get((level or "").strip().lower())
     if chosen is None:
         return
