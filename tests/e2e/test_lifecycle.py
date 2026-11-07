@@ -152,7 +152,7 @@ def test_a_failed_run_raises_with_its_fields(api: Wire, clients: HttpClients) ->
     )
     with pytest.raises(RunFailedError) as caught:
         job.result()
-    assert (caught.value.code, caught.value.stage) == ("input_unreadable", "processing_frames")
+    assert (caught.value.code, caught.value.stage) == ("input_unsupported", "processing_frames")
     assert caught.value.job is job
 
 

@@ -152,7 +152,7 @@ def run_body(status: str = "queued", **fields: Any) -> dict[str, Any]:
         "input_files": {"video": {"id": UPLOAD_ID, "filename": "clip.mp4", "size_bytes": 1024}},
         "outputs_requested": ["annotations"],
         "progress": None,
-        "usage_estimate": {"unit": "frame", "quantity": 300},
+        "usage_estimate": None,
         "outputs": None,
         "outputs_expire_at": None,
         "outputs_expired": False,
@@ -178,16 +178,16 @@ def run_body(status: str = "queued", **fields: Any) -> dict[str, Any]:
         body["model_version"] = "tm_2026_10_26"
         body["outputs_expire_at"] = "2026-10-27T12:01:00.000Z"
         body["result"] = {}
-        body["usage"] = {"unit": "frame", "quantity": 300}
+        body["usage"] = {"unit": "second", "quantity": 10}
     if status in ("failed", "canceled"):
-        body["usage"] = {"unit": "frame", "quantity": 0}
+        body["usage"] = {"unit": "second", "quantity": 0}
         body["error"] = {
-            "code": "input_unreadable" if status == "failed" else "canceled",
-            "message": "The model engine couldn't read the video." if status == "failed" else "Canceled.",
-            "fix": "Check that the file plays, then upload it again." if status == "failed" else None,
+            "code": "input_unsupported" if status == "failed" else "canceled",
+            "message": "The model engine can't process this video." if status == "failed" else "Canceled.",
+            "fix": "Check the video against the model's input requirements." if status == "failed" else None,
             "retryable": False,
             "retry_after_s": None,
-            "details": {},
+            "details": {"reason": "odd_dimensions"} if status == "failed" else {},
             "stage": "processing_frames" if status == "failed" else "queued",
         }
     if status in FINAL:
@@ -208,6 +208,7 @@ def run_response(status: str = "queued", poll_after_ms: int | None = None, **fie
 HAND_CONTRACT = {"id": "fenon.hand_pose.video", "version": CONTRACT_VERSION, "schema_sha256": SCHEMA_SHA256}
 HAND_START = 60
 HAND_END = 63
+HAND_BILLED_SECONDS = 7
 
 
 def hand_row(frame_index: int, **fields: Any) -> dict[str, Any]:
@@ -275,7 +276,7 @@ def hand_run_body(
                 "url_expires_at": "2026-10-26T13:00:00.000Z",
                 "size_bytes": len(video),
             }
-        body["usage"] = {"unit": "frame", "quantity": HAND_END - HAND_START}
+        body["usage"] = {"unit": "second", "quantity": HAND_BILLED_SECONDS}
     body.update(fields)
     return body
 
