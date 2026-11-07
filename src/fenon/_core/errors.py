@@ -88,8 +88,18 @@ class RunFailedError(FenonError):
         fix: str | None = None,
         details: Mapping[str, Any] | None = None,
         request_id: str | None = None,
+        retryable: bool = False,
+        retry_after_s: float | None = None,
     ) -> None:
-        super().__init__(message, code=code, fix=fix, details=details, request_id=request_id)
+        super().__init__(
+            message,
+            code=code,
+            fix=fix,
+            details=details,
+            request_id=request_id,
+            retryable=retryable,
+            retry_after_s=retry_after_s,
+        )
         self.run_id = run_id
         self.stage = stage
 

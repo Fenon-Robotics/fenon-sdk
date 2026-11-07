@@ -65,7 +65,7 @@ FENON_API_KEY=<a key of the local tenant> FENON_BASE_URL=http://127.0.0.1:8000/v
 - Every behaviour has a test; every bug fix adds the test that would have caught it.
 - Unit tests talk to the network only through `httpx2.MockTransport`.
 - End-to-end tests (`tests/e2e/`) use real sockets against the scripted local server in `tests/_wire.py`, bound to `127.0.0.1`. No test in the default suite reaches an external host.
-- Tests in `tests/live_stack/` are opt-in: they run only with `FENON_LIVE_STACK_API_KEY` set, against fenon-app's local stack (fenon-api and the echo-engine gateway, `docs/sdk-note.md` §10), and reach the STUN server the local fenon-api hands out. See `docs/features/live.md`.
+- Tests in `tests/live_stack/` are opt-in: they run only with `FENON_LIVE_STACK_API_KEY` set, against fenon-app's local stack (fenon-api and the echo-engine gateway), and reach the STUN server the local fenon-api hands out. See `docs/features/live.md`.
 - Time and randomness are injected, never patched globally.
 - Security boundaries (the API key, storage URLs, logging) get adversarial tests.
 

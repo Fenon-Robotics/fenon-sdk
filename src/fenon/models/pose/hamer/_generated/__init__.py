@@ -18,7 +18,7 @@ from .row import (
 
 CONTRACT_ID = "fenon.hand_pose.video"
 CONTRACT_VERSION = "1.1.0"
-SCHEMA_SHA256 = "6e59a34ecde0a6ca05a81806962e34d05309b8a011c9fadb5c542b6e21dd6d38"
+SCHEMA_SHA256 = "5dfeaba868c55df7a713b2951ed30c290dba996a63aaeea3c2d35b8cc0c3a381"
 
 __all__ = [
     "AnnotationsFile",

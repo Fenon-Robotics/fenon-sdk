@@ -12,6 +12,7 @@ from typing import Any, cast
 import httpx2
 import pytest
 from _support import (
+    HAND_BILLED_SECONDS,
     HAND_END,
     HAND_START,
     RUN_ID,
@@ -91,7 +92,7 @@ def test_one_call_uploads_runs_polls_and_parses(
     assert storage.calls("PUT", f"/bucket/{UPLOAD_ID}")[0].content == video.read_bytes()
     assert fake_runtime.sleeps == [0.25, 1.0, 1.0, 2.0]
     assert [frame.frame_index for frame in result.frames] == list(range(HAND_START, HAND_END))
-    assert (result.usage.unit, result.usage.quantity) == ("frame", HAND_END - HAND_START)
+    assert (result.usage.unit, result.usage.quantity) == ("second", HAND_BILLED_SECONDS)
     assert result.save(tmp_path / "out.jsonl").read_bytes() == annotations_output()
     assert len(storage.calls("GET", "/out/annotations.jsonl")) == 1
 
@@ -313,7 +314,7 @@ def test_a_run_read_after_its_outputs_expired_keeps_result_and_usage(
     expired = hand_response("succeeded", video=VIDEO_BYTES, outputs=None, outputs_expired=True)
     api, storage = video_api(video, expired)
     result = make_fenon(api=api, storage=storage).pose.hand(model=MODEL, input=video, video=True)
-    assert (result.usage.unit, result.usage.quantity) == ("frame", HAND_END - HAND_START)
+    assert (result.usage.unit, result.usage.quantity) == ("second", HAND_BILLED_SECONDS)
     assert result.outputs_expire_at == datetime(2026, 10, 27, 12, 1, tzinfo=UTC)
     for read in (lambda: list(result.frames), lambda: result.save(tmp_path / "a.jsonl")):
         with pytest.raises(NotFoundError) as caught:

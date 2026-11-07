@@ -148,13 +148,13 @@ def test_repr_shows_only_identifying_fields() -> None:
 
 def test_run_failed_error_carries_the_run_fields() -> None:
     error = RunFailedError(
-        "The model engine couldn't read the video.",
+        "The model engine can't process this video.",
         run_id="run_q3w8e1r5t2y6",
         stage="processing_frames",
-        code="input_unreadable",
+        code="input_unsupported",
     )
     assert (error.run_id, error.stage) == ("run_q3w8e1r5t2y6", "processing_frames")
-    assert error.code == "input_unreadable"
+    assert error.code == "input_unsupported"
     assert error.retryable is False
 
 

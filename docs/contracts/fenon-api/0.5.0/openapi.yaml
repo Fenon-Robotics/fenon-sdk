@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Fenon API
-  version: 0.4.0
+  version: 0.5.0
   description: |
     The contract of fenon-api, the Fenon service backend, and of the live gateway it hands clients to. fenon-api owns
     it: a change lands here first, then in fenon-api, the gateway, the SDK and the console's live client. Pre-release:
@@ -36,8 +36,13 @@ info:
     - **Rate limits** are per API key, in fixed windows: `create` 10 per 60 s (POST), `read` 120 per 60 s (GET),
       `write` 30 per 60 s (DELETE, and POST to cancel a run). Over the limit is `429 rate_limited` with `Retry-After` at the window's end.
       Values are provisional.
-    - **Bodies** are JSON (`application/json`, at most 1 MB). Unknown fields, wrong types (`10.0` isn't an integer)
-      and out-of-range values are refused with `422 input_invalid`, whose `details.field` is an RFC 6901 JSON Pointer.
+    - **Bodies** are JSON (`application/json`, at most 1 MB). Unknown fields, wrong types (a string for a number, a
+      fraction such as `10.5` for an integer) and out-of-range values are refused with `422 input_invalid`, whose
+      `details.field` is an RFC 6901 JSON Pointer. As in JSON Schema, a number with no fractional part is an integer:
+      `10.0` is read as `10`.
+    - **Paths:** an unknown path is `404 not_found`, and a known path with a method it doesn't serve is `405
+      method_not_allowed` with `Allow`. IDs never contain `/`; a percent-encoded `/` (`%2F`) is read as a separator,
+      so it names another path.
     - **Caching:** every response carries `Cache-Control: no-store`; responses can hold session tokens and relay
       credentials.
     - **Identifiers** are a type prefix and 12 characters of `0-9 a-h j k m n p-t v-z`: `ls_` live sessions, `ws_`
@@ -97,12 +102,22 @@ tags:
       time after the run finishes (`outputs_expire_at`; 24 h by default), then `outputs` is null and `outputs_expired` is
       true, while `result` and `usage` stay. An upload feeds one run and is deleted once that run is final.
 
+      **Input requirements** are in each model contract's input schema (for `fenon/hand-pose-hm`: MP4 or QuickTime,
+      H.264, HEVC, AV1 or VP9, at most 3840×2160, and an even width and height when the run asks for `video`). The
+      model engine checks them when it starts the run, not when the run is created: a video that misses one fails the
+      run with `input_unsupported`, and `details.reason` says which.
+
+      **Run errors:** `input_unsupported` (the model engine refused the video), `processing_failed` (retryable),
+      `deadline_exceeded` (retryable) and `canceled`.
+
       **Model contracts:** each model's input, result, outputs and row shapes are versioned JSON Schemas under
       `models/<contract>/<version>/` (`x-model-contracts`); a run names its contract with the SHA-256 of those files
       (input, result, outputs, row, concatenated).
 
-      **Usage** is the model's unit: for `fenon/hand-pose-hm`, the `frame`s a succeeded run processed; 0 for a failed or
-      canceled run. Not charged yet.
+      **Usage** is in `second`s, the unit live sessions use, so a project's usage is its live and recorded seconds added
+      together: a succeeded run bills `frames processed / frames in the video × the video's length`, to the nearest
+      whole second (a half rounds up), with no minimum; a failed or canceled run bills 0. `progress` stays in frames. Not
+      charged yet.
   - name: gateway
     description: |
       Served by the live gateway at the origin of `connection.offer_url`, not by fenon-api. Authenticated with
@@ -124,8 +139,8 @@ tags:
     description: |
       Called by the console's server for its pages, with a JWT for the signed-in user. Paths name the workspace and
       project by their public IDs; a user who isn't a member, or a project of another workspace, gets the same `404`
-      as one that doesn't exist. The dashboard and usage are provisional; the Playground is illustrative: nothing
-      runs and nothing is stored.
+      as one that doesn't exist. The run log and the usage report back the console's Usage and Overview pages; the
+      Playground is illustrative: nothing runs and nothing is stored.
   - name: samples
     description: The Playground's sample media, public, loaded by browsers.
   - name: internal
@@ -279,7 +294,8 @@ paths:
       description: |
         Checks, in order: the API key, recorded runs being available on this deployment (501 otherwise), the `create`
         rate limit, the body and the `Idempotency-Key`. Takes MP4 (`video/mp4`) and QuickTime (`video/quicktime`) up to
-        4 GiB. PUT the file to `upload_url` once, with exactly `headers` and no `Authorization`, before `expires_at`. A
+        4 GiB. PUT the file to `upload_url` with exactly `headers` and no `Authorization`, before `expires_at`. The link
+        writes once: storage refuses a second PUT to it (`412`), so nothing can replace an upload once it is stored. A
         replay returns the same upload with a fresh link while no run has used it.
       security: [{apiKey: []}]
       parameters:
@@ -675,23 +691,88 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/GatewayHealth"}
-  /console/workspaces/{workspace}/projects/{project}/dashboard:
+  /console/workspaces/{workspace}/projects/{project}/runs:
     parameters:
       - $ref: "#/components/parameters/Workspace"
       - $ref: "#/components/parameters/Project"
     get:
       tags: [console]
-      operationId: getProjectDashboard
-      summary: A project's Overview data (provisional)
+      operationId: listProjectRuns
+      summary: A project's recorded runs and live sessions, newest first
+      description: |
+        The console's run log (its Usage page and the Overview's recent runs): the recorded runs and live sessions
+        started in the last `days` UTC days, today included, newest first, filtered, then paged. Reading settles live
+        sessions whose end nobody reported, as session reads do. Any member may read it.
+      security: [{consoleJwt: []}]
+      parameters:
+        - $ref: "#/components/parameters/RunLogDays"
+        - name: mode
+          in: query
+          description: "Only runs of this mode. `preview` matches nothing yet: previews aren't stored."
+          schema: {enum: [recorded, preview, live]}
+        - name: status
+          in: query
+          description: Only runs with this status.
+          schema: {$ref: "#/components/schemas/LogRunStatus"}
+        - name: q
+          in: query
+          description: Only runs whose ID or input name contains this text, ignoring case.
+          schema: {type: string, minLength: 1, maxLength: 100}
+        - name: page
+          in: query
+          description: The page, from 1. A page past the last one is the last one.
+          schema: {type: integer, minimum: 1, default: 1}
+        - name: page_size
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 10}
+      responses:
+        "200":
+          description: One page of the matching runs, and how many match.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/LogRunPage"}
+        "400":
+          description: "`invalid_request`: `details.field` names the query parameter."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/InvalidRequestError"}
+        "401": {$ref: "#/components/responses/InvalidToken"}
+        "404": {$ref: "#/components/responses/ProjectNotFound"}
+        "500": {$ref: "#/components/responses/InternalError"}
+        "503": {$ref: "#/components/responses/ConsoleKeysUnavailable"}
+  /console/workspaces/{workspace}/projects/{project}/runs/{run_id}:
+    parameters:
+      - $ref: "#/components/parameters/Workspace"
+      - $ref: "#/components/parameters/Project"
+      - name: run_id
+        in: path
+        required: true
+        description: A recorded run's ID (`run_…`) or a live session's (`ls_…`).
+        schema: {type: string}
+    get:
+      tags: [console]
+      operationId: getProjectRun
+      summary: One run of the run log
+      description: A recorded run or live session of the project, as the run log shows it. Any member may read it.
       security: [{consoleJwt: []}]
       responses:
         "200":
-          description: The five most recent live sessions and the usage recorded since the start of the UTC month.
+          description: The run.
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/ProjectDashboard"}
+              schema: {$ref: "#/components/schemas/LogRun"}
         "401": {$ref: "#/components/responses/InvalidToken"}
-        "404": {$ref: "#/components/responses/ProjectNotFound"}
+        "404":
+          description: "`not_found`: no such workspace or project, the user isn't a member, or it has no run or live session with this ID."
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ErrorResponse"
+                  - properties:
+                      error:
+                        properties:
+                          code: {const: not_found}
         "500": {$ref: "#/components/responses/InternalError"}
         "503": {$ref: "#/components/responses/ConsoleKeysUnavailable"}
   /console/workspaces/{workspace}/projects/{project}/usage:
@@ -701,25 +782,24 @@ paths:
     get:
       tags: [console]
       operationId: getProjectUsage
-      summary: A project's usage for a period (provisional)
+      summary: A project's usage per UTC day
+      description: |
+        The console's usage report (the Overview's totals and chart): the last `days` UTC days, oldest first, ending
+        today, over the same runs as the run log, each counted on the day it started. Only charged usage counts: a
+        succeeded recorded run counts the seconds of video it processed, a live session its connected seconds; failed
+        and canceled runs count nothing. `runs` counts every run and live session started in the period, `failed_runs`
+        those that failed. Any member may read it.
       security: [{consoleJwt: []}]
       parameters:
-        - name: from
-          in: query
-          description: First UTC day, inclusive. Default the first day of the current UTC month.
-          schema: {type: string, format: date}
-        - name: to
-          in: query
-          description: Last UTC day, exclusive. Default one month after `from`'s month starts. Must be after `from`.
-          schema: {type: string, format: date}
+        - $ref: "#/components/parameters/RunLogDays"
       responses:
         "200":
-          description: Totals per model and unit, and up to 100 records, newest first.
+          description: One entry per UTC day, and the period's totals.
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/ProjectUsage"}
+              schema: {$ref: "#/components/schemas/UsageReport"}
         "400":
-          description: "`invalid_request`: `details.field` is `from` or `to`."
+          description: "`invalid_request`: `details.field` is `days`."
           content:
             application/json:
               schema: {$ref: "#/components/schemas/InvalidRequestError"}
@@ -1023,6 +1103,11 @@ components:
       required: true
       description: The workspace's public ID.
       schema: {type: string, examples: [ws_7k2mq9x4ab3d]}
+    RunLogDays:
+      name: days
+      in: query
+      description: The last `days` UTC days, today included.
+      schema: {type: integer, minimum: 1, maximum: 90, default: 30}
     Project:
       name: project
       in: path
@@ -1416,7 +1501,7 @@ components:
         headers:
           type: object
           additionalProperties: {type: string}
-          description: Send exactly these with the PUT (`Content-Type`, `Content-Length`).
+          description: "Send exactly these with the PUT: `Content-Type`, `Content-Length` and `If-None-Match: *`."
         expires_at: {$ref: "#/components/schemas/Timestamp"}
     CreateRunRequest:
       type: object
@@ -1460,7 +1545,7 @@ components:
       required: [unit, quantity]
       additionalProperties: false
       properties:
-        unit: {type: string, examples: [frame]}
+        unit: {type: string, examples: [second], description: "`second` for recorded runs."}
         quantity: {type: integer, minimum: 0}
     OutputFile:
       type: object
@@ -1476,7 +1561,7 @@ components:
       required: [code, message, fix, retryable, retry_after_s, details, stage]
       additionalProperties: false
       properties:
-        code: {enum: [input_unreadable, processing_failed, deadline_exceeded, canceled]}
+        code: {enum: [input_unsupported, processing_failed, deadline_exceeded, canceled]}
         message: {type: string}
         fix: {type: [string, "null"]}
         retryable: {type: boolean}
@@ -1678,57 +1763,108 @@ components:
             rate_limit_windows: {type: integer, minimum: 0}
             run_outputs: {type: integer, minimum: 0, description: Runs whose expired outputs were deleted.}
             uploads: {type: integer, minimum: 0, description: Uploads deleted (their run is final, or no run used them).}
-    ProjectDashboard:
+    LogRunStatus:
+      enum: [queued, running, succeeded, failed, canceled, ended]
+      description: |
+        A recorded run is `queued`, `running` (processing frames), `succeeded`, `failed` or `canceled`. A live session is
+        `running` until it ends, then `ended`, or `failed` when it ended with `failed`, `gateway_lost` or
+        `unsupported_stream`.
+    LogRun:
       type: object
-      required: [recent_sessions, usage_this_month, provisional]
+      required: [id, mode, model, input, started_by, status, usage, video_seconds, charged, duration_s, started_at, events, error]
       additionalProperties: false
       properties:
-        recent_sessions:
-          type: array
-          items: {$ref: "#/components/schemas/LiveSession"}
-          maxItems: 5
-        usage_this_month:
+        id: {type: string, pattern: "^(run|ls)_[0-9a-hjkmnp-tv-z]{12}$"}
+        mode: {enum: [recorded, live], description: "`recorded` for a recorded run, `live` for a live session."}
+        model: {type: string}
+        input: {type: [string, "null"], description: The uploaded file's name; null for a live session.}
+        started_by:
+          type: object
+          required: [kind, api_key_name]
+          additionalProperties: false
+          properties:
+            kind: {enum: [playground, api_key], description: "`api_key` when an API key started it, `playground` otherwise."}
+            api_key_name: {type: [string, "null"], description: "The key's name; null for the Playground and for a key with no name or no longer there."}
+        status: {$ref: "#/components/schemas/LogRunStatus"}
+        usage:
           type: object
           required: [unit, quantity]
           additionalProperties: false
           properties:
-            unit: {const: second}
-            quantity: {type: integer, minimum: 0}
-        provisional: {const: true}
-    ProjectUsage:
+            unit: {enum: [frame, second], description: "The unit the run was created with: `second`, or `frame` for a recorded run created before recorded usage moved to seconds."}
+            quantity: {type: integer, minimum: 0, description: "The seconds a succeeded recorded run bills (0 otherwise), or a live session's connected seconds so far."}
+        video_seconds: {type: number, minimum: 0, description: "Seconds of video covered: a succeeded recorded run's video duration (0 otherwise), or a live session's connected seconds."}
+        charged: {type: boolean, description: "Whether its usage is charged: a succeeded recorded run, or a live session with connected time."}
+        duration_s:
+          description: "Seconds from its start (a recorded run's processing start, a live session's media connection, or its creation when neither happened) to its end; null while it runs."
+          oneOf:
+            - {type: integer, minimum: 0}
+            - type: "null"
+        started_at: {$ref: "#/components/schemas/Timestamp"}
+        events:
+          type: array
+          description: What happened, oldest first.
+          items:
+            type: object
+            required: [at, stage, frames, failed]
+            additionalProperties: false
+            properties:
+              at: {$ref: "#/components/schemas/Timestamp"}
+              stage: {enum: [queued, processing_frames, succeeded, failed, canceled, waiting_for_media, live, ended]}
+              frames:
+                description: A recorded run's frames processed by then; null when not known or for a live session.
+                oneOf:
+                  - {type: integer, minimum: 0}
+                  - type: "null"
+              failed: {type: boolean}
+        error:
+          description: Why a run failed; null otherwise.
+          oneOf:
+            - type: object
+              required: [code, message, fix]
+              additionalProperties: false
+              properties:
+                code: {type: string}
+                message: {type: string}
+                fix: {type: [string, "null"]}
+            - type: "null"
+    LogRunPage:
       type: object
-      required: [from, to, totals, records, provisional]
+      required: [runs, total, page, page_size]
       additionalProperties: false
       properties:
-        from: {type: string, format: date}
-        to: {type: string, format: date}
+        runs:
+          type: array
+          items: {$ref: "#/components/schemas/LogRun"}
+        total: {type: integer, minimum: 0, description: How many runs match the filters.}
+        page: {type: integer, minimum: 1}
+        page_size: {type: integer, minimum: 1, maximum: 100}
+    UsageReport:
+      type: object
+      required: [days, totals]
+      additionalProperties: false
+      properties:
+        days:
+          type: array
+          items:
+            type: object
+            required: [date, full_seconds, preview_seconds, live_seconds]
+            additionalProperties: false
+            properties:
+              date: {type: string, format: date}
+              full_seconds: {type: number, minimum: 0, description: Seconds billed by succeeded recorded runs started that day.}
+              preview_seconds: {type: number, minimum: 0, description: "Seconds of preview video processed; 0 until previews are stored."}
+              live_seconds: {type: number, minimum: 0, description: Connected seconds of live sessions started that day.}
         totals:
-          type: array
-          items:
-            type: object
-            required: [model, unit, quantity, sessions]
-            additionalProperties: false
-            properties:
-              model: {type: string}
-              unit: {type: string}
-              quantity: {type: integer, minimum: 0}
-              sessions: {type: integer, minimum: 1}
-        records:
-          type: array
-          maxItems: 100
-          items:
-            type: object
-            required: [source_type, source_id, model, unit, quantity, final, created_at]
-            additionalProperties: false
-            properties:
-              source_type: {const: live_session}
-              source_id: {type: string}
-              model: {type: string}
-              unit: {type: string}
-              quantity: {type: integer, minimum: 0}
-              final: {type: boolean}
-              created_at: {$ref: "#/components/schemas/Timestamp"}
-        provisional: {const: true}
+          type: object
+          required: [billable_seconds, live_seconds, live_sessions, runs, failed_runs]
+          additionalProperties: false
+          properties:
+            billable_seconds: {type: number, minimum: 0, description: Live and recorded seconds added together.}
+            live_seconds: {type: number, minimum: 0}
+            live_sessions: {type: integer, minimum: 0, description: Charged live sessions.}
+            runs: {type: integer, minimum: 0}
+            failed_runs: {type: integer, minimum: 0}
     PlaygroundSamples:
       type: object
       required: [data, illustrative]

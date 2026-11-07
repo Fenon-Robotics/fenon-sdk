@@ -12,7 +12,7 @@
     "video": {
       "type": "string",
       "pattern": "^upl_[0-9a-hjkmnp-tv-z]{12}$",
-      "description": "Upload ID of the video, from POST /v1/uploads, in the same project."
+      "description": "Upload ID of the video, from POST /v1/uploads, in the same project. The video must be MP4 or QuickTime, H.264, HEVC, AV1 or VP9, at most 3840x2160; when the run asks for the video output, its width and height must be even (H.264 4:2:0). The model engine checks this when it starts the run: a video that misses a requirement fails the run with input_unsupported, and details.reason says which."
     },
     "range": {
       "title": "HandPoseRange",

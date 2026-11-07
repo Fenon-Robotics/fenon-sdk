@@ -1,4 +1,4 @@
-"""End-to-end tests of recorded-mode ``client.pose.hand`` over real sockets (recorded mode: coming soon)."""
+"""End-to-end tests of recorded-mode ``client.pose.hand`` over real sockets, against scripted servers."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 from _support import (
+    HAND_BILLED_SECONDS,
     HAND_END,
     HAND_START,
     RUN_ID,
@@ -84,7 +85,7 @@ def test_the_readme_call_end_to_end(api: Wire, storage: Wire, video: Path, tmp_p
 
     assert [frame.frame_index for frame in frames] == list(range(HAND_START, HAND_END))
     assert frames[0].hands[0].handedness == "right"
-    assert (result.usage.unit, result.usage.quantity) == ("frame", HAND_END - HAND_START)
+    assert (result.usage.unit, result.usage.quantity) == ("second", HAND_BILLED_SECONDS)
     assert saved.read_bytes() == content
     assert json.loads(api.received("POST", "/v1/runs")[0].body) == {
         "model": "fenon/hand-pose-hm",

@@ -304,6 +304,8 @@ def _run_failed_error(run: Run) -> RunFailedError:
         code=failure.code,
         fix=failure.fix,
         details=failure.details,
+        retryable=failure.retryable,
+        retry_after_s=failure.retry_after_s,
     )
 
 

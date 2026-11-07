@@ -390,10 +390,21 @@ class TestPolling:
         with pytest.raises(RunFailedError) as caught:
             job.result()
         error = caught.value
-        assert (error.run_id, error.code, error.stage) == (RUN_ID, "input_unreadable", "processing_frames")
-        assert error.message == "The model engine couldn't read the video."
-        assert error.fix == "Check that the file plays, then upload it again."
+        assert (error.run_id, error.code, error.stage) == (RUN_ID, "input_unsupported", "processing_frames")
+        assert error.message == "The model engine can't process this video."
+        assert error.fix == "Check the video against the model's input requirements."
+        assert error.details == {"reason": "odd_dimensions"}
+        assert (error.retryable, error.retry_after_s) == (False, None)
         assert error.job is job
+
+    @pytest.mark.parametrize("code", ["processing_failed", "deadline_exceeded"])
+    def test_a_retryable_run_failure_says_so(self, make_clients: MakeClients, code: str) -> None:
+        failed = run_body("failed")
+        failed["error"].update(code=code, retryable=True, retry_after_s=30.0)
+        api = Router({("GET", RUN_PATH): [json_response(200, failed)]})
+        with pytest.raises(RunFailedError) as caught:
+            SampleJob(make_clients(api=api), snapshot()).result()
+        assert (caught.value.code, caught.value.retryable, caught.value.retry_after_s) == (code, True, 30.0)
 
     def test_canceled_run_raises_run_failed(self, make_clients: MakeClients) -> None:
         api = Router({("GET", RUN_PATH): [run_response("canceled")]})

@@ -38,6 +38,6 @@ class HandPoseOutputs(BaseModel):
     )
     video: VideoFile | None = Field(
         None,
-        description="The input video with each frame's hands drawn on it, H.264 in fragmented MP4. Frame N of this video is row N of annotations.",
+        description="The input video with each frame's hands drawn on it, H.264 in fragmented MP4. Frame N of this video is row N of annotations. Needs an input video with an even width and height.",
         title="VideoFile",
     )

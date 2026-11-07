@@ -10,6 +10,7 @@ from typing import Any
 import httpx2
 import pytest
 from _support import (
+    HAND_BILLED_SECONDS,
     HAND_END,
     HAND_START,
     OUTPUT_URL,
@@ -59,7 +60,7 @@ def test_result_carries_the_run_video_camera_and_usage(make_clients: MakeClients
     assert (result.video.width, result.video.height, result.video.fps) == (1280, 720, 30.0)
     assert result.joint_order == JOINT_ORDER
     assert (result.camera.focal_length_px, result.camera.assumed) == (25000.0, True)
-    assert (result.usage.unit, result.usage.quantity) == ("frame", FRAMES)
+    assert (result.usage.unit, result.usage.quantity) == ("second", HAND_BILLED_SECONDS)
     assert storage.requests == []
     assert "output-signature" not in repr(result)
 
@@ -82,10 +83,20 @@ def test_save_writes_the_exact_output(make_clients: MakeClients, tmp_path: Path)
     assert result.save(tmp_path / "frames.jsonl").read_bytes() == content
 
 
-def test_unknown_fields_are_ignored(make_clients: MakeClients) -> None:
-    content = lines(*(hand_row(i, track_id="t", future_field=1) for i in range(HAND_START, HAND_END)))
+def row_with_scala_extras(frame_index: int) -> dict[str, Any]:
+    row = {"index": frame_index, **hand_row(frame_index, future_field=1)}
+    row["hands"] = [{**hand, "track_id": f"hamer-{frame_index:06d}-0"} for hand in row["hands"]]
+    return row
+
+
+def test_unknown_fields_on_a_row_or_a_hand_are_ignored(make_clients: MakeClients) -> None:
+    content = lines(*(row_with_scala_extras(i) for i in range(HAND_START, HAND_END)))
     result, _ = finished_result(make_clients, content)
-    assert len(list(result.frames)) == FRAMES
+    frames = list(result.frames)
+    assert [frame.frame_index for frame in frames] == list(range(HAND_START, HAND_END))
+    assert frames[0].hands[0].handedness == "right"
+    assert "track_id" not in frames[0].hands[0].model_dump()
+    assert "index" not in frames[0].model_dump()
 
 
 @pytest.mark.parametrize(
@@ -185,22 +196,29 @@ def test_numbers_sent_as_text_are_refused(make_clients: MakeClients, content: by
 @pytest.mark.parametrize(
     "fields",
     [
-        {"usage": {"unit": "second", "quantity": FRAMES}},
-        {"usage": {"unit": "frame", "quantity": 999}},
+        {"usage": {"unit": "frame", "quantity": FRAMES}},
         {
             "result": hand_result(
                 video={"width": "1280", "height": 720, "fps": 30.0, "frame_count": 300, "duration_s": 10.0}
             )
         },
     ],
-    ids=["wrong-unit", "wrong-quantity", "width-as-text"],
+    ids=["frames-not-seconds", "width-as-text"],
 )
-def test_usage_must_match_the_frames_and_types_stay_strict(
+def test_usage_must_be_in_seconds_and_types_stay_strict(
     make_clients: MakeClients, fields: dict[str, Any]
 ) -> None:
     with pytest.raises(ServerError) as caught:
         HandPoseJob(make_clients(), succeeded(**fields)).result()
     assert caught.value.code == "invalid_response"
+
+
+@pytest.mark.parametrize("seconds", [0, 1, 86_400])
+def test_the_billed_seconds_are_fenon_apis_and_never_compared_with_the_frames(
+    make_clients: MakeClients, seconds: int
+) -> None:
+    result = HandPoseJob(make_clients(), succeeded(usage={"unit": "second", "quantity": seconds})).result()
+    assert (result.usage.unit, result.usage.quantity) == ("second", seconds)
 
 
 def test_errors_building_the_result_carry_the_job_and_request_id(make_clients: MakeClients) -> None:

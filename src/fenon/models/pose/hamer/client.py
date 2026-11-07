@@ -42,7 +42,7 @@ from ._generated import (
 CONTRACT = ContractSupport(CONTRACT_ID, {CONTRACT_VERSION: SCHEMA_SHA256})
 ANNOTATIONS = "annotations"
 VIDEO = "video"
-USAGE_UNIT = "frame"
+USAGE_UNIT = "second"
 _JOINT_ORDER_TEXT: str = get_args(HandPoseFrame.model_fields["joint_order"].annotation)[0]
 JOINT_ORDER: tuple[str, ...] = tuple(_JOINT_ORDER_TEXT.split(","))
 
@@ -118,14 +118,8 @@ class HandPoseJob(Job[HandPoseResult]):
                 else {name: f.model_dump(mode="json") for name, f in run.outputs.items()}
             )
             _validated(HandPoseOutputs, outputs)
-        frames = result.range.end_frame - result.range.start_frame
         usage = run.usage
-        if (
-            tuple(result.joint_order) != JOINT_ORDER
-            or usage is None
-            or usage.unit != USAGE_UNIT
-            or usage.quantity != frames
-        ):
+        if tuple(result.joint_order) != JOINT_ORDER or usage is None or usage.unit != USAGE_UNIT:
             raise _invalid_run()
         return HandPoseResult(
             id=run.id,
