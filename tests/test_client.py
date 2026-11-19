@@ -30,6 +30,7 @@ from _support import (
 )
 
 from fenon import (
+    CreditsError,
     Fenon,
     HandPoseJob,
     HandPoseResult,
@@ -198,6 +199,35 @@ def test_a_not_implemented_upload_fails_after_one_request(make_fenon: MakeFenon,
     assert (caught.value.code, caught.value.status_code) == ("not_implemented", 501)
     assert caught.value.details == {"port": "idempotency_store"}
     assert len(api.requests) == 1
+
+
+@pytest.mark.parametrize("balance_cents", [0, -2])
+def test_exhausted_workspace_credit_is_reported_without_retry(
+    make_fenon: MakeFenon, video: Path, balance_cents: int
+) -> None:
+    api, storage = full_api(video)
+    api.scripts[("POST", "/v1/runs")] = [
+        error_response(
+            402,
+            "insufficient_credits",
+            message="This workspace has no credit left.",
+            retryable=False,
+            retry_after_s=None,
+            details={"balance_cents": balance_cents},
+            request_id="req_credits",
+        )
+    ]
+
+    with pytest.raises(CreditsError) as caught:
+        make_fenon(api=api, storage=storage).pose.hand(model=MODEL, input=video)
+
+    assert (caught.value.status_code, caught.value.code) == (402, "insufficient_credits")
+    assert caught.value.details["balance_cents"] == balance_cents
+    assert caught.value.retryable is False
+    assert caught.value.request_id == "req_credits"
+    assert caught.value.job is None
+    assert len(storage.calls("PUT", f"/bucket/{UPLOAD_ID}")) == 1
+    assert len(api.calls("POST", "/v1/runs")) == 1
 
 
 def test_repr_never_shows_the_key(make_fenon: MakeFenon) -> None:

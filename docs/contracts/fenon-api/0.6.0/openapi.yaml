@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Fenon API
-  version: 0.5.0
+  version: 0.6.0
   description: |
     The contract of fenon-api, the Fenon service backend, and of the live gateway it hands clients to. fenon-api owns
     it: a change lands here first, then in fenon-api, the gateway, the SDK and the console's live client. Pre-release:
@@ -139,8 +139,10 @@ tags:
     description: |
       Called by the console's server for its pages, with a JWT for the signed-in user. Paths name the workspace and
       project by their public IDs; a user who isn't a member, or a project of another workspace, gets the same `404`
-      as one that doesn't exist. The run log and the usage report back the console's Usage and Overview pages; the
-      Playground is illustrative: nothing runs and nothing is stored.
+      as one that doesn't exist. The run log and the usage report back the console's Usage and Overview pages, and the
+      credit wallet its credits menu and Billing page. The Playground is illustrative: nothing runs, and every run, a
+      full run or a preview, is stored as a synthetic recorded run and charged, so the run log, the usage report and
+      the wallet count it.
   - name: samples
     description: The Playground's sample media, public, loaded by browsers.
   - name: internal
@@ -366,8 +368,10 @@ paths:
         Checks, in order: the API key, recorded runs being available (501 otherwise), the `create` rate limit, the body,
         the `Idempotency-Key`, the model, its input, the outputs asked for, then the upload: in this project
         (`input_invalid` on the input's upload field), stored (`upload_not_ready`), at its reserved size
-        (`upload_size_mismatch`) and not used by another run (`upload_already_used`). A replay returns the run as it is
-        now.
+        (`upload_size_mismatch`) and not used by another run (`upload_already_used`); last, the workspace's credit
+        (`402 insufficient_credits` at a balance of 0 or less; the first check of a workspace grants its welcome
+        credit). The run is created with its model's price, and a succeeded run is charged its billed seconds times
+        that price. A replay returns the run as it is now.
       security: [{apiKey: []}]
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -415,6 +419,7 @@ paths:
                       error:
                         properties:
                           code: {enum: [upload_already_used, idempotency_conflict, idempotency_in_progress]}
+        "402": {$ref: "#/components/responses/InsufficientCredits"}
         "413": {$ref: "#/components/responses/RequestTooLarge"}
         "415": {$ref: "#/components/responses/UnsupportedMediaType"}
         "422":
@@ -708,7 +713,7 @@ paths:
         - $ref: "#/components/parameters/RunLogDays"
         - name: mode
           in: query
-          description: "Only runs of this mode. `preview` matches nothing yet: previews aren't stored."
+          description: "Only runs of this mode: `recorded`, `preview` (a Playground preview) or `live`."
           schema: {enum: [recorded, preview, live]}
         - name: status
           in: query
@@ -786,8 +791,8 @@ paths:
       description: |
         The console's usage report (the Overview's totals and chart): the last `days` UTC days, oldest first, ending
         today, over the same runs as the run log, each counted on the day it started. Only charged usage counts: a
-        succeeded recorded run counts the seconds of video it processed, a live session its connected seconds; failed
-        and canceled runs count nothing. `runs` counts every run and live session started in the period, `failed_runs`
+        succeeded recorded run counts the seconds of video it processed (a Playground preview's as preview seconds),
+        a live session its connected seconds; failed and canceled runs count nothing. `runs` counts every run and live session started in the period, `failed_runs`
         those that failed. Any member may read it.
       security: [{consoleJwt: []}]
       parameters:
@@ -803,6 +808,32 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/InvalidRequestError"}
+        "401": {$ref: "#/components/responses/InvalidToken"}
+        "404": {$ref: "#/components/responses/ProjectNotFound"}
+        "500": {$ref: "#/components/responses/InternalError"}
+        "503": {$ref: "#/components/responses/ConsoleKeysUnavailable"}
+  /console/workspaces/{workspace}/projects/{project}/credits:
+    parameters:
+      - $ref: "#/components/parameters/Workspace"
+      - $ref: "#/components/parameters/Project"
+    get:
+      tags: [console]
+      operationId: getProjectCredits
+      summary: The credit wallet of a project's workspace
+      description: |
+        The workspace's credit wallet, in integer cents: its balance (the sum of its grants and charges; below 0 when
+        runs that started before it ran out were charged), what was charged this UTC month, and each grant, newest
+        first, with what is left of it (charges use up the oldest grant first). A user's first workspace gets a
+        welcome credit of 500 cents, once per user, granted on the first read of its wallet or its first run. A
+        succeeded recorded run is charged its billed seconds times its model's price; live sessions aren't charged.
+        Any member may read it.
+      security: [{consoleJwt: []}]
+      responses:
+        "200":
+          description: The wallet.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ProjectCredits"}
         "401": {$ref: "#/components/responses/InvalidToken"}
         "404": {$ref: "#/components/responses/ProjectNotFound"}
         "500": {$ref: "#/components/responses/InternalError"}
@@ -868,10 +899,15 @@ paths:
       operationId: createPlaygroundRun
       summary: Run the model on a sample clip's range (illustrative)
       description: |
-        Completes at once: usage counts the range's frames, and the outputs are the processed clip and the range's
-        annotations. Nothing runs and nothing is stored. Checked in order: the token, membership, then the body. Besides
-        the usual body checks, `422 input_invalid` names `/clip_id` for an unknown clip, `/range/end_s` for a range past
-        the clip's end, and `/range` for a preview over 10 s or a full run over 60 s.
+        Completes after a short wait: usage counts the range's frames, and the outputs are the processed clip and the
+        range's annotations. Nothing runs. Every run, a full run (`recorded`) or a `preview`, is stored as a synthetic
+        recorded run with that mode, so the run log, the usage report and the wallet count it: an upload of the clip's
+        file, a `succeeded` run of `fenon/hand-pose-hm` with a result in its contract's `result` schema,
+        `model_version` `synthetic` and no output links, its usage in seconds (the range's share of the clip, as a
+        recorded run bills) and its charge at the model's price. Its `id` is that run's. Checked in order: the token,
+        membership, the body, then the workspace's credit (`402 insufficient_credits`, as for `createRun`). Besides
+        the usual body checks, `422 input_invalid` names `/clip_id` for an unknown clip, `/range/end_s` for a range
+        past the clip's end, and `/range` for a preview over 10 s or a full run over 60 s.
       security: [{consoleJwt: []}]
       requestBody:
         required: true
@@ -886,6 +922,7 @@ paths:
               schema: {$ref: "#/components/schemas/PlaygroundRun"}
         "400": {$ref: "#/components/responses/InvalidJson"}
         "401": {$ref: "#/components/responses/InvalidToken"}
+        "402": {$ref: "#/components/responses/InsufficientCredits"}
         "404": {$ref: "#/components/responses/ProjectNotFound"}
         "413": {$ref: "#/components/responses/RequestTooLarge"}
         "415": {$ref: "#/components/responses/UnsupportedMediaType"}
@@ -1127,6 +1164,23 @@ components:
     WwwAuthenticate:
       schema: {const: Bearer}
   responses:
+    InsufficientCredits:
+      description: |
+        `insufficient_credits`: the workspace's credit balance is 0 or less; `details.balance_cents` is the balance.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ErrorResponse"
+              - properties:
+                  error:
+                    properties:
+                      code: {const: insufficient_credits}
+                      details:
+                        type: object
+                        required: [balance_cents]
+                        properties:
+                          balance_cents: {type: integer}
     InvalidApiKey:
       description: |
         `invalid_api_key`: missing, unknown, disabled, expired or out of uses, or not tied to a project. Every case
@@ -1771,11 +1825,11 @@ components:
         `unsupported_stream`.
     LogRun:
       type: object
-      required: [id, mode, model, input, started_by, status, usage, video_seconds, charged, duration_s, started_at, events, error]
+      required: [id, mode, model, input, started_by, status, usage, video_seconds, charged, credits_used_cents, duration_s, started_at, events, error]
       additionalProperties: false
       properties:
         id: {type: string, pattern: "^(run|ls)_[0-9a-hjkmnp-tv-z]{12}$"}
-        mode: {enum: [recorded, live], description: "`recorded` for a recorded run, `live` for a live session."}
+        mode: {enum: [recorded, preview, live], description: "`recorded` for a recorded run, `preview` for a Playground preview, `live` for a live session."}
         model: {type: string}
         input: {type: [string, "null"], description: The uploaded file's name; null for a live session.}
         started_by:
@@ -1795,6 +1849,7 @@ components:
             quantity: {type: integer, minimum: 0, description: "The seconds a succeeded recorded run bills (0 otherwise), or a live session's connected seconds so far."}
         video_seconds: {type: number, minimum: 0, description: "Seconds of video covered: a succeeded recorded run's video duration (0 otherwise), or a live session's connected seconds."}
         charged: {type: boolean, description: "Whether its usage is charged: a succeeded recorded run, or a live session with connected time."}
+        credits_used_cents: {type: integer, minimum: 0, description: "What the run took from its workspace's credits, in cents: a recorded run's billed seconds times its price once it succeeded, 0 otherwise; 0 for a live session, which isn't charged yet."}
         duration_s:
           description: "Seconds from its start (a recorded run's processing start, a live session's media connection, or its creation when neither happened) to its end; null while it runs."
           oneOf:
@@ -1853,7 +1908,7 @@ components:
             properties:
               date: {type: string, format: date}
               full_seconds: {type: number, minimum: 0, description: Seconds billed by succeeded recorded runs started that day.}
-              preview_seconds: {type: number, minimum: 0, description: "Seconds of preview video processed; 0 until previews are stored."}
+              preview_seconds: {type: number, minimum: 0, description: Seconds billed by succeeded Playground previews started that day.}
               live_seconds: {type: number, minimum: 0, description: Connected seconds of live sessions started that day.}
         totals:
           type: object
@@ -1865,6 +1920,26 @@ components:
             live_sessions: {type: integer, minimum: 0, description: Charged live sessions.}
             runs: {type: integer, minimum: 0}
             failed_runs: {type: integer, minimum: 0}
+    ProjectCredits:
+      type: object
+      required: [balance_cents, charged_this_month_cents, grants]
+      additionalProperties: false
+      properties:
+        balance_cents: {type: integer, description: The sum of the workspace's grants and charges; can be below 0.}
+        charged_this_month_cents: {type: integer, minimum: 0, description: What runs were charged this UTC month.}
+        grants:
+          type: array
+          description: Newest first.
+          items:
+            type: object
+            required: [id, kind, amount_cents, remaining_cents, granted_at]
+            additionalProperties: false
+            properties:
+              id: {type: string}
+              kind: {enum: [welcome_credit], description: "`welcome_credit`, a user's first workspace's one-time credit."}
+              amount_cents: {type: integer, minimum: 1}
+              remaining_cents: {type: integer, minimum: 0, description: What is left after charges, which use up the oldest grant first.}
+              granted_at: {type: string, format: date-time}
     PlaygroundSamples:
       type: object
       required: [data, illustrative]
