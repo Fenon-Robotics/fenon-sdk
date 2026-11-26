@@ -388,7 +388,14 @@ class TestApiClient:
         assert make_clients(api=recorder).api.request("GET", "/models").body == {"ok": 1}
 
     @pytest.mark.parametrize(
-        "content", [b"not json", b"[1, 2]", b"", b'{"a": NaN}', b"[" * 100_000 + b"]" * 100_000]
+        "content",
+        [
+            b"not json",
+            b"[1, 2]",
+            b"",
+            b'{"a": NaN}',
+            pytest.param(b"[" * 100_000 + b"]" * 100_000, id="deeply-nested-json"),
+        ],
     )
     def test_success_without_a_json_object_is_invalid_response(
         self, make_clients: MakeClients, content: bytes
