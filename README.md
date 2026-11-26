@@ -4,13 +4,25 @@ Run Fenon's robotics models on your own data. The first model is hand-pose estim
 
 ## Install
 
-Install from an SDK checkout with Python 3.11 or newer.
+With Python 3.11 or newer, add [`fenon` from PyPI](https://pypi.org/project/fenon/) to your project:
 
 ```sh
-python -m pip install .
+uv add fenon
 ```
 
-The published `fenon` 0.0.1 package on PyPI is the initial version-only release.
+Or install it with pip:
+
+```sh
+python -m pip install fenon
+```
+
+The examples below require `fenon` 0.1.0 or newer. If you already have 0.0.1 installed, run `uv add "fenon>=0.1.0"`.
+
+To install directly from this repository at the release tag:
+
+```sh
+uv add "fenon @ git+https://github.com/Fenon-Robotics/fenon-sdk.git@v0.1.0"
+```
 
 ## Authenticate
 
