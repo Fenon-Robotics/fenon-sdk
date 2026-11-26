@@ -8,6 +8,19 @@ from ._generated import Run
 from ._generated import RunUsage as Usage
 from .config import LIMITS
 from .contract import parse_contract
+from .device import (
+    ConsoleSession,
+    DeviceCredentials,
+    DeviceSession,
+    changed_project,
+    credential_path,
+    device_access,
+    edit_credentials,
+    finish_replacement,
+    private_url,
+    read_credentials,
+    save_credentials,
+)
 from .errors import (
     AuthError,
     CreditsError,
@@ -37,8 +50,11 @@ __all__ = [
     "ApiResponse",
     "AuthError",
     "ClientConfig",
+    "ConsoleSession",
     "ContractSupport",
     "CreditsError",
+    "DeviceCredentials",
+    "DeviceSession",
     "FenonError",
     "HttpClients",
     "InvalidInputError",
@@ -56,13 +72,21 @@ __all__ = [
     "Settings",
     "UnsupportedModelError",
     "Usage",
+    "changed_project",
     "configure_logging",
     "create_run",
+    "credential_path",
     "decode_json",
+    "device_access",
+    "edit_credentials",
     "error_from_response",
+    "finish_replacement",
     "logger",
     "open_http_clients",
     "parse_contract",
+    "private_url",
+    "read_credentials",
     "retry_after_of",
+    "save_credentials",
     "upload_file",
 ]

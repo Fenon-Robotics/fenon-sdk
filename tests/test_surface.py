@@ -54,6 +54,7 @@ def test_client_parameters_are_keyword_only_with_their_defaults() -> None:
     assert keyword_parameters(Fenon.__init__) == [
         ("api_key", None),
         ("base_url", None),
+        ("project", None),
         ("timeout", 60.0),
         ("max_retries", 2),
     ]

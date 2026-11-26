@@ -11,6 +11,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 DEFAULT_BASE_URL = "https://api.fenon.ai/v1"
+DEFAULT_CONSOLE_URL = "https://console.fenon.ai"
+DEVICE_TOKEN_LIFETIME_S = 15 * 60
+DEVICE_TOKEN_MARGIN_S = 30
 
 
 @dataclass(frozen=True)

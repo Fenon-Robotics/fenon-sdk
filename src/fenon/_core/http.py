@@ -1,4 +1,4 @@
-"""HTTP access to the Fenon API and to presigned storage URLs; the only module that imports ``httpx2``.
+"""HTTP access to the Fenon API and presigned storage, with project-key and device-session authentication.
 
 - ``ClientConfig.resolve``: an argument wins over its ``FENON_*`` setting, which wins over the default.
 - The API client sends the key only to the base URL's scheme, host and port, follows no redirects and reuses
@@ -38,6 +38,7 @@ from pydantic import BaseModel, ValidationError
 
 from .._version import __version__
 from .config import LIMITS
+from .device import DeviceAccess
 from .errors import (
     AuthError,
     InvalidInputError,
@@ -142,8 +143,11 @@ class _Failure(enum.Enum):
 
 
 class ApiClient:
-    def __init__(self, config: ClientConfig, http: httpx2.Client, runtime: Runtime) -> None:
+    def __init__(
+        self, config: ClientConfig, http: httpx2.Client, runtime: Runtime, device: DeviceAccess | None = None
+    ) -> None:
         self._config = config
+        self._device = device
         self._http = http
         self._runtime = runtime
 
@@ -157,20 +161,24 @@ class ApiClient:
         max_retries: int | None = None,
         timeout_s: float | None = None,
     ) -> ApiResponse:
-        if self._config.api_key is None:
+        key = self._config.api_key
+        device = self._device if key is None else None
+        if key is None and device is None:
             raise AuthError(
-                "No Fenon API key was given.",
+                "No Fenon API key or device login was found.",
                 code="missing_api_key",
-                fix=f"Pass api_key=... to Fenon() or set {ENV_PREFIX}API_KEY.",
+                fix=f"Run `fenon login`, pass api_key=... to Fenon(), or set {ENV_PREFIX}API_KEY.",
             )
         request = self._build(method, path, json_body, params, timeout_s)
-        request.headers["Authorization"] = f"Bearer {self._config.api_key}"
+        if device is not None:
+            request.headers["Fenon-Project"] = device.project
         if method.upper() == "POST":
             request.headers["Idempotency-Key"] = self._runtime.new_idempotency_key()
         attempts = (self._config.max_retries if max_retries is None else max_retries) + 1
         attempt = 0
         while True:
             attempt += 1
+            request.headers["Authorization"] = f"Bearer {device.token() if device else key}"
             outcome = _attempt(self._http, request)
             if outcome is _Failure.PERMANENT:
                 logger.info("%s %s failed without a readable response", method, path)
@@ -348,6 +356,7 @@ def open_http_clients(
     config: ClientConfig,
     *,
     runtime: Runtime | None = None,
+    device: DeviceAccess | None = None,
     api_transport: httpx2.BaseTransport | None = None,
     storage_transport: httpx2.BaseTransport | None = None,
 ) -> HttpClients:
@@ -365,7 +374,7 @@ def open_http_clients(
         transport=storage_transport,
     )
     return HttpClients(
-        api=ApiClient(config, api_http, effective_runtime),
+        api=ApiClient(config, api_http, effective_runtime, device),
         storage=StorageClient(storage_http, effective_runtime),
         runtime=effective_runtime,
     )

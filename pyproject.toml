@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fenon"
-version = "0.1.0"
+version = "0.2.0"
 description = "Python client for the Fenon API"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -28,6 +28,9 @@ dependencies = [
     "pydantic-settings>=2.7,<3",
     "typing-extensions>=4.12",
 ]
+
+[project.scripts]
+fenon = "fenon.__main__:main"
 
 [project.urls]
 Repository = "https://github.com/Fenon-Robotics/fenon-sdk"
