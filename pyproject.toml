@@ -29,6 +29,9 @@ dependencies = [
     "typing-extensions>=4.12",
 ]
 
+[project.scripts]
+fenon = "fenon.__main__:main"
+
 [project.urls]
 Repository = "https://github.com/Fenon-Robotics/fenon-sdk"
 

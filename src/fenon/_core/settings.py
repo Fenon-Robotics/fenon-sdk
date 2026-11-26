@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from .config import DEFAULT_BASE_URL
+from .config import DEFAULT_BASE_URL, DEFAULT_CONSOLE_URL
 
 ENV_PREFIX = "FENON_"
 
@@ -17,4 +17,5 @@ class Settings(BaseSettings):
 
     api_key: str | None = None
     base_url: str = DEFAULT_BASE_URL
+    console_url: str = DEFAULT_CONSOLE_URL
     log: str | None = None

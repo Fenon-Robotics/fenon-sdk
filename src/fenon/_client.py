@@ -9,7 +9,15 @@ from __future__ import annotations
 from types import TracebackType
 from typing import Self
 
-from ._core import LIMITS, ClientConfig, HttpClients, Settings, configure_logging, open_http_clients
+from ._core import (
+    LIMITS,
+    ClientConfig,
+    HttpClients,
+    Settings,
+    configure_logging,
+    device_access,
+    open_http_clients,
+)
 from .models.pose import Pose
 
 
@@ -21,6 +29,7 @@ class Fenon:
         *,
         api_key: str | None = None,
         base_url: str | None = None,
+        project: str | None = None,
         timeout: float = LIMITS.default_timeout_s,
         max_retries: int = LIMITS.default_max_retries,
     ) -> None:
@@ -29,7 +38,8 @@ class Fenon:
             api_key=api_key, base_url=base_url, timeout=timeout, max_retries=max_retries, settings=settings
         )
         configure_logging(settings.log)
-        self._attach(config, open_http_clients(config))
+        device = device_access(config.base_url, project) if config.api_key is None else None
+        self._attach(config, open_http_clients(config, device=device))
 
     @classmethod
     def _from_clients(cls, config: ClientConfig, clients: HttpClients) -> Self:

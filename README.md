@@ -2,6 +2,19 @@
 
 Run Fenon's robotics models on your own data. The first model is hand-pose estimation on video.
 
+## Sign in from your terminal
+
+Run `fenon login`, approve the device in the browser, and select a default project. A local script can then use
+`Fenon()`. If several projects are available, choose one at the prompt or pass `fenon login --project proj_…`.
+Use `fenon projects use proj_…` to change the default, or pass `Fenon(project="proj_…")` for one client.
+
+The CLI stores the device credential in `~/.config/fenon/credentials` and the SDK exchanges it for short-lived
+API tokens. The stored credential is private to your user on POSIX. Use `fenon logout` to revoke it, or revoke
+the device in Settings → Profile. The local login is tied to the API URL selected at sign-in.
+
+Use `FENON_CONSOLE_URL` and `FENON_BASE_URL` together for a preview or local stack. Project API keys still take
+precedence for scripts and deployments: `api_key=` first, then `FENON_API_KEY`, then the saved device login.
+
 ## Install
 
 Install from an SDK checkout with Python 3.11 or newer.
