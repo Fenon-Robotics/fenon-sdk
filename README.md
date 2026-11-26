@@ -34,7 +34,7 @@ The examples below require `fenon` 0.1.0 or newer. If your project has 0.0.1, tr
 You can also install the SDK directly from the GitHub release tag:
 
 ```sh
-uv add "fenon @ git+https://github.com/Fenon-Robotics/fenon-sdk.git@v0.1.0"
+uv add "fenon @ git+https://github.com/Fenon-Robotics/fenon-sdk.git@v0.2.0"
 ```
 
 ## Authenticate
