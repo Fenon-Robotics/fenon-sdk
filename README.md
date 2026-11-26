@@ -17,13 +17,25 @@ precedence for scripts and deployments: `api_key=` first, then `FENON_API_KEY`, 
 
 ## Install
 
-Install from an SDK checkout with Python 3.11 or newer.
+With Python 3.11 or newer, add [`fenon` from PyPI](https://pypi.org/project/fenon/) to your project:
 
 ```sh
-python -m pip install .
+uv add fenon
 ```
 
-The published `fenon` 0.0.1 package on PyPI is the initial version-only release.
+Or install it with pip:
+
+```sh
+python -m pip install fenon
+```
+
+The examples below require `fenon` 0.1.0 or newer. If your project has 0.0.1, try `uv add "fenon>=0.1.0"`.
+
+You can also install the SDK directly from the GitHub release tag:
+
+```sh
+uv add "fenon @ git+https://github.com/Fenon-Robotics/fenon-sdk.git@v0.1.0"
+```
 
 ## Authenticate
 
