@@ -16,9 +16,9 @@ Or install it with pip:
 python -m pip install fenon
 ```
 
-The examples below require `fenon` 0.1.0 or newer. If you already have 0.0.1 installed, run `uv add "fenon>=0.1.0"`.
+The examples below require `fenon` 0.1.0 or newer. If your project has 0.0.1, try `uv add "fenon>=0.1.0"`.
 
-To install directly from this repository at the release tag:
+You can also install the SDK directly from the GitHub release tag:
 
 ```sh
 uv add "fenon @ git+https://github.com/Fenon-Robotics/fenon-sdk.git@v0.1.0"
